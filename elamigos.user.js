@@ -60,27 +60,26 @@
             } catch (error) { /* keep Filecrypt usable if Worker is frozen */ }
 
             function startWhenReady() {
-                var clicks = 0;
+                var clicked = false;
                 var waits = 0;
                 function tick() {
                     var root = document.getElementById('pow-captcha');
                     if (root && root.getAttribute('data-state') !== 'idle') return;
-                    if (clicks >= 2 || waits > 40) return;
+                    if (clicked || waits > 40) return;
                     var box = root && root.querySelector('.pow-captcha__box');
                     if (!box) {
                         waits += 1;
                         setTimeout(tick, 250);
                         return;
                     }
-                    // Extra clicks restart Filecrypt's worker and slow the SHA-1 search.
-                    clicks += 1;
+                    // One click starts the worker. More clicks restart it, spawn ads, and slow SHA-1.
+                    clicked = true;
                     try {
                         box.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, pointerType: 'mouse' }));
                     } catch (error) {
                         box.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, cancelable: true }));
                     }
                     box.click();
-                    if (clicks < 2) setTimeout(tick, 2000);
                 }
                 tick();
             }
