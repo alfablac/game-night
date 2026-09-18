@@ -5,6 +5,13 @@ import userscripts from "eslint-plugin-userscripts";
 
 export default defineConfig([
   {
+    files: ["eslint.config.js", "tests/**/*.mjs"],
+    extends: [js.configs.recommended],
+    languageOptions: {
+      globals: { ...globals.node, ...globals.browser },
+    },
+  },
+  {
     files: ["**/*.user.js"],
     extends: [js.configs.recommended],
     plugins: { userscripts: { rules: userscripts.rules } },

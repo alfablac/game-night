@@ -1,4 +1,4 @@
-name: Lint
+name: Checks
 
 on:
   push:
@@ -9,8 +9,9 @@ permissions:
   contents: read
 
 jobs:
-  lint:
+  checks:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6
@@ -19,4 +20,5 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm lint
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm check
