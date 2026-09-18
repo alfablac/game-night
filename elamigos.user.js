@@ -79,15 +79,26 @@
         }
 
         function findGoUrl() {
-            var node = document.querySelector('a[href*="/Go/"],form[action*="/Go/"],[data-url*="/Go/"]');
-            var value = node && (node.getAttribute('href') || node.getAttribute('action') || node.getAttribute('data-url'));
-            if (value) {
-                value = absolute(value);
-                return isFilecryptGoURL(value) ? value : '';
+            var nodes = document.querySelectorAll('a[href*="/Go/"],form[action*="/Go/"],[data-url*="/Go/"]');
+            for (var i = 0; i < nodes.length; i++) {
+                var node = nodes[i];
+                var value = node.getAttribute('href') || node.getAttribute('action') || node.getAttribute('data-url');
+                if (value) {
+                    value = absolute(value);
+                    if (isFilecryptGoURL(value)) {
+                        return value;
+                    }
+                }
             }
-            var match = document.documentElement.innerHTML.match(/(?:["'])(https?:\/\/[^"']+\/Go\/[A-Za-z0-9._~-]+\.html|\/Go\/[A-Za-z0-9._~-]+\.html)(?:["'])/i);
-            value = match ? absolute(match[1]) : '';
-            return isFilecryptGoURL(value) ? value : '';
+            var matcher = /(?:["'])(https?:\/\/[^"']+\/Go\/[A-Za-z0-9._~-]+\.html|\/Go\/[A-Za-z0-9._~-]+\.html)(?:["'])/gi;
+            var match;
+            while ((match = matcher.exec(document.documentElement.innerHTML))) {
+                var candidate = absolute(match[1]);
+                if (isFilecryptGoURL(candidate)) {
+                    return candidate;
+                }
+            }
+            return '';
         }
 
         async function linkPage() {
@@ -924,7 +935,7 @@
                 var title = txt(clone)
                     .replace(/\[[^\]]*\]/g, '')
                     .replace(/\+?\s*ElAmigos/i, '')
-                    .replace(/(?:\s*\+)+\s*$/, '')
+                    .replace(/(?:\s+\+)+\s*$/, '')
                     .replace(/\s+/g, ' ')
                     .trim();
                 var entry = { h: href, t: title || text, d: current ? current.date : '', g: text };
@@ -1459,14 +1470,20 @@
             button.textContent = 'Copiado';
             setTimeout(function () { button.textContent = oldText; }, 1400);
         };
+        var failed = function () {
+            var oldText = button.textContent;
+            button.textContent = 'Copy failed';
+            setTimeout(function () { button.textContent = oldText; }, 1400);
+        };
         if (navigator.clipboard && navigator.clipboard.writeText) {
-            navigator.clipboard.writeText(text).then(copied).catch(function () { fallbackCopy(text, copied); });
+            navigator.clipboard.writeText(text).then(copied).catch(function () { fallbackCopy(text, copied, failed); });
         } else {
-            fallbackCopy(text, copied);
+            fallbackCopy(text, copied, failed);
         }
     }
 
-    function fallbackCopy(text, done) {
+    function fallbackCopy(text, done, fail) {
+        var previousActiveElement = document.activeElement;
         var textarea = E('textarea', { text: text, 'aria-hidden': 'true' });
         textarea.setAttribute('tabindex', '-1');
         textarea.style.cssText = 'position:fixed;opacity:0;width:1px;height:1px;left:0;top:0;';
@@ -1476,9 +1493,14 @@
         try {
             if (document.execCommand('copy')) {
                 done();
+            } else if (fail) {
+                fail();
             }
         } finally {
             textarea.remove();
+            if (previousActiveElement && typeof previousActiveElement.focus === 'function') {
+                previousActiveElement.focus();
+            }
         }
     }
 
@@ -2196,24 +2218,9 @@
 
         main = E('main', { class: 'ea-main' });
         modal = E('div', { class: 'ea-modal', hidden: '', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Game details',
-            onclick: function (event) { if (event.target === modal) { closeGameModal(); } },
-            onkeydown: function (event) {
-                if (event.key === 'Escape') {
-                    event.preventDefault();
-                    closeGameModal();
-                } else if (event.key === 'Tab') {
-                    var focusable = qa('a[href], button, input, textarea, summary, [tabindex]', modal).filter(function (element) {
-                        return !element.disabled && element.tabIndex >= 0 && element.getClientRects().length;
-                    });
-                    var first = focusable[0];
-                    var last = focusable[focusable.length - 1];
-                    if ((event.shiftKey && document.activeElement === first) || (!event.shiftKey && document.activeElement === last)) {
-                        event.preventDefault();
-                        (event.shiftKey ? last : first).focus();
-                    }
-                }
-            }
+            onclick: function (event) { if (event.target === modal) { closeGameModal(); } }
         });
+        bindModalKeys(modal, closeGameModal);
         var modalBox = E('div', { class: 'ea-box' });
         var modalHeader = E('div', { class: 'ea-modal-head' });
         modalHeader.append(E('button', { class: 'ea-btn', text: 'Close', onclick: closeGameModal }));

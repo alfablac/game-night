@@ -129,6 +129,13 @@ test('nested archive headings and trailing update markers are parsed', async t =
     assert.deepEqual(await page.locator('.ea-row-title').allTextContents(), ['Gamma']);
 });
 
+test('a trailing "+" that is part of the game name survives update-marker stripping', async t => {
+    const page = await open(t, { url: 'https://elamigos.site/#/archive?q=' + encodeURIComponent('mega mix') });
+    await respond(page, 'ea_index_refresh=', indexHTML
+        + '<h3>Hatsune Miku Project DIVA Mega Mix+ + ElAmigos <a href="data/megamix.html">download</a></h3>');
+    assert.deepEqual(await page.locator('.ea-row-title').allTextContents(), ['Hatsune Miku Project DIVA Mega Mix+']);
+});
+
 test('pending navigation shares one index request and renders the latest route', async t => {
     const page = await open(t);
     await page.locator('.ea-input').fill('beta');
@@ -335,7 +342,11 @@ test('clipboard fallback copies from a visible textarea inside the app', async t
     assert.equal(snapshot.parentId, 'ea-app');
     assert.notEqual(snapshot.display, 'none');
     assert.match(snapshot.value, /https:\/\/example\.test\/directdownload\/game/);
-    assert.equal(await page.getByRole('button', { name: 'Copiado' }).count(), 1);
+    const copyButton = page.getByRole('button', { name: 'Copiado' });
+    assert.equal(await copyButton.count(), 1);
+    assert.equal(await copyButton.evaluate(element => element === document.activeElement), true);
+    await page.keyboard.press('Escape');
+    assert.equal(await page.locator('.ea-modal').isHidden(), true);
 });
 
 test('YouTube overlay is a dialog that Escape closes without dismissing game details', async t => {
@@ -397,9 +408,45 @@ test('Filecrypt overlay keeps Escape and rejects off-site /Go/ URLs', async t =>
     assert.equal(await page.locator('.ea-modal[aria-label="Game details"]').isHidden(), false);
 });
 
+test('Filecrypt Link page skips an off-site /Go/ candidate before the real one', async t => {
+    const page = await open(t);
+    await respond(page, 'ea_index_refresh=');
+    await page.getByRole('checkbox', { name: 'Show Filecrypt' }).check();
+    await page.getByRole('link', { name: 'Alpha', exact: true }).click();
+    await respond(page, '/data/alpha.html', gameHTML('Alpha') + '<a href="https://filecrypt.cc/Container/a.html">Filecrypt</a>');
+    await page.getByRole('button', { name: 'Resolve Filecrypt' }).click();
+    await page.locator('.ea-modal[aria-label="Filecrypt resolver"]').waitFor();
+    await page.route('https://filecrypt.cc/Link/real.html**', route => route.fulfill({
+        contentType: 'text/html',
+        body: '<html><body>'
+            + '<a href="https://ads.example/Go/x.html">Ad</a>'
+            + '<a href="/Go/real.html">Real</a>'
+            + '</body></html>'
+    }));
+    await page.evaluate(() => {
+        const frame = document.querySelector('iframe[title="Filecrypt verification"]');
+        window.dispatchEvent(new MessageEvent('message', {
+            origin: 'https://filecrypt.cc',
+            source: frame.contentWindow,
+            data: { eaFilecrypt: true, payload: { type: 'container-ready', rows: [{ filename: 'Pack', linkURL: 'https://filecrypt.cc/Link/real.html' }] } }
+        }));
+    });
+    await page.waitForFunction(() => document.querySelector('.ea-fc-results').value.includes('Pack\n'));
+    const output = await page.locator('.ea-fc-results').inputValue();
+    assert.match(output, /https:\/\/filecrypt\.cc\/Go\/real\.html/);
+    assert.doesNotMatch(output, /ads\.example/);
+});
+
 test('userscript metadata names the author and project URLs', () => {
     assert.match(source, /@author\s+alfablac/);
     assert.match(source, /@homepage\s+https:\/\/github\.com\/alfablac\/game-night/);
     assert.match(source, /@homepageURL\s+https:\/\/github\.com\/alfablac\/game-night/);
     assert.match(source, /@supportURL\s+https:\/\/github\.com\/alfablac\/game-night\/issues/);
+});
+
+test('source contains no stray control characters', () => {
+    // Only \n (and \t/\r, if the file ever grows them) are legitimate control characters;
+    // anything else (e.g. a literal NUL slipped into a regex) is a bug, not intentional content.
+    // eslint-disable-next-line no-control-regex
+    assert.doesNotMatch(source, /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/);
 });

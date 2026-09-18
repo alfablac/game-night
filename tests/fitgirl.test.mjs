@@ -282,6 +282,15 @@ test('inline black hoster notes become readable without wiping green titles', as
   assert.equal(await page.locator('#green-title').evaluate(element => getComputedStyle(element).color), 'rgb(51, 153, 102)');
 });
 
+test('a blue text color is not caught by the black/#333 override', async t => {
+  const page = await openPage(t, `<article><div class="entry-content">
+    <span id="blue-note" style="color:#0000ff">Blue emphasis</span>
+    <span id="white-on-black" style="background-color:#000; color:#fff">White on black</span>
+  </div></article>`);
+  assert.equal(await page.locator('#blue-note').evaluate(element => getComputedStyle(element).color), 'rgb(0, 0, 255)');
+  assert.equal(await page.locator('#white-on-black').evaluate(element => getComputedStyle(element).color), 'rgb(255, 255, 255)');
+});
+
 test('carousel drag stops after the mouse is released outside the strip', async t => {
   const posters = Array.from({ length: 8 }, () => `<a href="#"><img src="${image}" width="180" height="60" alt=""></a>`).join('');
   const page = await openPage(t, `<div class="wplp_widget_13066"><div class="wplp_listposts" style="width:220px;overflow:auto;white-space:nowrap">${posters}</div></div>${article}`);
@@ -353,4 +362,11 @@ test('userscript metadata names the project URLs', () => {
   assert.match(source, /@homepage\s+https:\/\/github\.com\/alfablac\/game-night/);
   assert.match(source, /@homepageURL\s+https:\/\/github\.com\/alfablac\/game-night/);
   assert.match(source, /@supportURL\s+https:\/\/github\.com\/alfablac\/game-night\/issues/);
+});
+
+test('source contains no stray control characters', () => {
+  // Only \n (and \t/\r, if the file ever grows them) are legitimate control characters;
+  // anything else (e.g. a literal NUL slipped into a regex) is a bug, not intentional content.
+  // eslint-disable-next-line no-control-regex
+  assert.doesNotMatch(source, /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/);
 });

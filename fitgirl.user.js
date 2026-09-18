@@ -181,15 +181,6 @@ body,
   border-color: #2b3a48 !important;
 }
 
-.entry-content [style*="color: black" i],
-.entry-content [style*="color:black" i],
-.entry-content [style*="color:#000" i],
-.entry-content [style*="color: #000" i],
-.entry-content [style*="color:#333" i],
-.entry-content [style*="color: #333" i] {
-  color: #dce6ed !important;
-}
-
 body {
   font-family: var(--fg-font) !important;
   font-size: 15px !important;
@@ -1894,6 +1885,20 @@ details.fg-extra > summary:hover {
     return `${value.toFixed(digits)} ${units[unit]}`;
   };
 
+  // CSS attribute selectors can't tell "color:#000" from "color:#0000ff" or
+  // "background-color:#000" (they only match a substring), so dark hoster
+  // notes get fixed up here instead: only an exact black/#333 *text* color
+  // is cleared, leaving blues, greens and dark backgrounds alone.
+  const DARK_TEXT_COLORS = new Set(['black', 'rgb(0, 0, 0)', 'rgb(51, 51, 51)']);
+
+  const fixDarkTextColors = c => {
+    c.querySelectorAll('[style]').forEach(el => {
+      if (DARK_TEXT_COLORS.has(el.style.color)) {
+        el.style.removeProperty('color');
+      }
+    });
+  };
+
   const formatSizes = c => {
     if (c.dataset.fgSizes) return;
     c.dataset.fgSizes = '1';
@@ -2609,6 +2614,7 @@ details.fg-extra > summary:hover {
       cleanDigest(c);
     }
 
+    fixDarkTextColors(c);
     formatSizes(c);
     formatSources(c);
     formatLabels(c);

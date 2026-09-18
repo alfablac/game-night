@@ -122,6 +122,26 @@
         }).catch(function () { return false; });
     }
 
+    function idbDeleteZovo(zovoUrl) {
+        return getDB().then(function (db) {
+            return new Promise(function (resolve) {
+                try {
+                    var tx = db.transaction('zovo_links', 'readwrite');
+                    var store = tx.objectStore('zovo_links');
+                    var cleanKey = (zovoUrl || '').replace(/^https?:\/\//i, '').replace(/\/+$/, '').toLowerCase();
+                    var normUrl = (zovoUrl || '').replace(/^http:\/\//i, 'https://');
+                    store.delete(zovoUrl);
+                    store.delete(cleanKey);
+                    store.delete(normUrl);
+                    tx.oncomplete = function () { resolve(true); };
+                    tx.onerror = function () { resolve(false); };
+                } catch (e) {
+                    resolve(false);
+                }
+            });
+        }).catch(function () { return false; });
+    }
+
     /* =========================================================================
        2. ZOVO SHORTLINK AUTO-BYPASS ENGINE (Active on Zovo domains)
        ========================================================================= */
@@ -1885,7 +1905,7 @@
             Array.prototype.slice.call(el.attributes).forEach(function (attr) {
                 // URL parsers drop control characters and spaces, so strip them before the scheme check.
                 // eslint-disable-next-line no-control-regex
-                var value = attr.value.replace(/[ - ]/g, '');
+                var value = attr.value.replace(/[\x00-\x20]/g, '');
                 var name = attr.name.toLowerCase();
                 if (/^on/i.test(name) || name === 'srcdoc' || /^javascript:/i.test(value)) {
                     el.removeAttribute(attr.name);
@@ -1902,12 +1922,7 @@
                 }
             });
 
-            // Normalize oversized headings
-            if (/^H[1-6]$/i.test(el.tagName)) {
-                el.style.fontSize = '12.5px';
-                el.style.margin = '6px 0 3px 0';
-                el.style.fontWeight = '700';
-            }
+            var isHeading = /^H[1-6]$/i.test(el.tagName);
 
             var style = el.getAttribute('style') || '';
             if (style) {
@@ -1920,8 +1935,15 @@
                     // Remove clashing inline color (e.g. #003300 dark green, #00ff00 neon, #00ffff)
                     el.style.color = '';
                 }
-                // Remove inline font sizes to match the site font size
-                el.style.fontSize = '';
+                // Remove inline font sizes to match the site font size, unless we're about to set our own below
+                if (!isHeading) el.style.fontSize = '';
+            }
+
+            // Normalize oversized headings (after the inline-style cleanup above, so it sticks)
+            if (isHeading) {
+                el.style.fontSize = '12.5px';
+                el.style.margin = '6px 0 3px 0';
+                el.style.fontWeight = '700';
             }
         });
 
@@ -2275,22 +2297,35 @@
         if (typeof GM_getValue === 'function') {
             var gmCached = GM_getValue('dodi_zovo_' + cleanKey) || GM_getValue('dodi_zovo_' + zovoUrl);
             if (gmCached) {
-                console.log('[DODI Resolver] Found in GM cache:', gmCached);
-                onDone(gmCached);
-                return;
+                if (isDownloadUrl(gmCached)) {
+                    console.log('[DODI Resolver] Found in GM cache:', gmCached);
+                    onDone(gmCached);
+                    return;
+                }
+                // Stale/invalid cached destination: evict it and fall through to a fresh resolution.
+                console.warn('[DODI Resolver] Evicting invalid GM cache entry:', gmCached);
+                if (typeof GM_setValue === 'function') {
+                    GM_setValue('dodi_zovo_' + cleanKey, '');
+                    GM_setValue('dodi_zovo_' + zovoUrl, '');
+                }
             }
         }
 
         // 2. Check IndexedDB persistent cache
         idbGetZovo(zovoUrl).then(function (idbCached) {
             if (idbCached) {
-                console.log('[DODI Resolver] Found in IndexedDB cache:', idbCached);
-                if (typeof GM_setValue === 'function') {
-                    GM_setValue('dodi_zovo_' + cleanKey, idbCached);
-                    GM_setValue('dodi_zovo_' + zovoUrl, idbCached);
+                if (isDownloadUrl(idbCached)) {
+                    console.log('[DODI Resolver] Found in IndexedDB cache:', idbCached);
+                    if (typeof GM_setValue === 'function') {
+                        GM_setValue('dodi_zovo_' + cleanKey, idbCached);
+                        GM_setValue('dodi_zovo_' + zovoUrl, idbCached);
+                    }
+                    onDone(idbCached);
+                    return;
                 }
-                onDone(idbCached);
-                return;
+                // Stale/invalid cached destination: evict it and fall through to a fresh resolution.
+                console.warn('[DODI Resolver] Evicting invalid IndexedDB cache entry:', idbCached);
+                idbDeleteZovo(zovoUrl);
             }
 
             // Build list of candidate URLs to try: primary first, then fallbacks
@@ -2472,7 +2507,23 @@
         }
     }
 
+    // Allow-listed hosts used to redirect http->https; upgrade in place instead of blocking so we
+    // still request them (GM_xmlhttpRequest doesn't follow that redirect automatically for us here).
+    function upgradeAllowedProtocol(url) {
+        try {
+            var parsed = new URL(url, location.href);
+            if (parsed.protocol === 'http:' && /^(?:www\.)?(?:dodi-repacks\.site|game-repack\.site)$/i.test(parsed.hostname)) {
+                parsed.protocol = 'https:';
+                return parsed.href;
+            }
+        } catch (e) {
+            // fall through; isAllowedArticleUrl will reject invalid URLs below
+        }
+        return url;
+    }
+
     function requestPage(url) {
+        url = upgradeAllowedProtocol(url);
         if (!isAllowedArticleUrl(url)) {
             return Promise.reject(new Error('Blocked host'));
         }
@@ -2627,7 +2678,7 @@
             { id: 'trending', icon: 'fire', label: 'Trending', count: state.pinnedData.trending.length }
         ];
 
-        if (state.searchAllResults.length > 0 || state.isSearching) {
+        if (state.searchAllResults.length > 0 || state.isSearching || state.activeTab === 'search') {
             tabs.push({ id: 'search', icon: 'search', label: 'Search Results', count: state.searchAllResults.length });
         }
 
@@ -2766,10 +2817,13 @@
                     btnAllText.textContent = 'Resolving ' + colName + '...';
 
                     var idx = 0;
+                    var skipped = 0;
                     var step = function () {
                         if (idx >= colItems.length) {
                             btnAllText.textContent = colName + ' Done';
-                            showToast('All ' + colName + ' links resolved!');
+                            showToast(skipped > 0
+                                ? (colItems.length - skipped) + '/' + colItems.length + ' ' + colName + ' links resolved (' + skipped + ' failed)'
+                                : 'All ' + colName + ' links resolved!');
                             return;
                         }
                         var item = colItems[idx];
@@ -2783,6 +2837,7 @@
 
                         resolveZovoSilently(item.mirror.url, item.mirror.fallbackUrls, function (directUrl) {
                             if (!isDownloadUrl(directUrl)) {
+                                skipped++;
                                 idx++;
                                 step();
                                 return;
@@ -2798,6 +2853,7 @@
                             idx++;
                             step();
                         }, function () {
+                            skipped++;
                             idx++;
                             step();
                         });

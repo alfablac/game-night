@@ -19,7 +19,7 @@ function article(title, content = '') {
     <div class="entry-content">${content}</div></article>`;
 }
 
-async function start(t, html = pinned, { nativeFetch = false, clock = false, viewport } = {}) {
+async function start(t, html = pinned, { nativeFetch = false, clock = false, viewport, path = '/' } = {}) {
   const context = await browser.newContext({ serviceWorkers: 'block', ...(viewport ? { viewport } : {}) });
   const errors = [];
   t.after(async () => {
@@ -27,7 +27,7 @@ async function start(t, html = pinned, { nativeFetch = false, clock = false, vie
     assert.deepEqual(errors, [], 'userscript must not emit uncaught browser errors');
   });
   await context.route('**/*', route => {
-    if (route.request().isNavigationRequest() && route.request().url() === origin + '/') {
+    if (route.request().isNavigationRequest() && route.request().url() === origin + path) {
       return route.fulfill({ contentType: 'text/html', body: '<!doctype html><html><head></head><body>' + html + '</body></html>' });
     }
     return route.abort();
@@ -35,7 +35,7 @@ async function start(t, html = pinned, { nativeFetch = false, clock = false, vie
   const page = await context.newPage();
   page.setDefaultTimeout(5_000);
   page.on('pageerror', error => errors.push(error.message));
-  await page.goto(origin + '/');
+  await page.goto(origin + path);
   if (clock) await page.clock.install();
   await page.evaluate(({ nativeFetch }) => {
     window.__requests = [];
@@ -106,6 +106,55 @@ test('DODI rejects executable mirror URLs while retaining web and magnet links',
   const page = await start(t, pinned + article('Safe', '<h3>Download Links</h3><ul><li>' + links + '</li></ul><p>' + links + '</p>'));
   const protocols = await page.locator('.ea-dl-actions a').evaluateAll(links => links.map(link => new URL(link.href).protocol));
   assert.deepEqual(protocols, ['https:', 'https:', 'magnet:', 'https:', 'https:', 'magnet:']);
+});
+
+test('DODI upgrades allow-listed http mirrors to https but still blocks other hosts', async t => {
+  const html = `<article class="sticky"><div class="entry-content">
+    <h2>Exclusive Repacks</h2><ul>
+      <li><a href="http://dodi-repacks.site/game-a/">Game A</a></li>
+      <li><a href="http://evil.test/game-b/">Game B</a></li>
+    </ul>
+  </div></article>`;
+  const page = await start(t, html);
+  await page.locator('[data-tab="exclusive"]').click();
+  const releaseButtons = page.getByRole('button', { name: 'View Release' });
+
+  await releaseButtons.nth(0).click();
+  await reply(page, origin + '/game-a/', article('Game A'));
+  await page.locator('.dodi-modal-body .ea-card').waitFor();
+  assert.equal(await page.evaluate(() => window.__requests.some(request => request.url === 'https://dodi-repacks.site/game-a/')), true);
+
+  await page.getByRole('button', { name: /close/i }).click();
+  await releaseButtons.nth(1).click();
+  await page.waitForFunction(() => (document.querySelector('.dodi-modal-body')?.textContent || '').includes('Blocked host'));
+  assert.equal(await page.evaluate(() => window.__requests.some(request => request.url.includes('evil.test'))), false);
+});
+
+test('DODI evicts an invalid cached Zovo destination instead of reusing it forever', async t => {
+  const content = '<h3>Download Links</h3><ul><li><a href="https://go.zovo.ink/abc">Zovo Mirror</a></li></ul>';
+  const page = await start(t, pinned + article('CacheBug', content));
+  await page.evaluate(() => {
+    window.__gmSets = [];
+    window.GM_getValue = key => (key.indexOf('dodi_zovo_') === 0 ? 'ftp://stale-mirror.example/file' : undefined);
+    window.GM_setValue = (key, value) => { window.__gmSets.push([key, value]); };
+  });
+  await page.locator('[data-tab="exclusive"]').click();
+  await page.getByRole('button', { name: 'View Release' }).first().click();
+  await reply(page, origin + '/game-a/', article('CacheBug', content));
+  await page.locator('.dodi-modal-body .ea-card').waitFor();
+  await page.locator('.fg-downloads > summary').click();
+  await page.getByRole('button', { name: 'Silent Resolve' }).click();
+  // The stale entry must be evicted (set back to '') rather than kept forever...
+  await page.waitForFunction(() => window.__gmSets.some(entry => entry[1] === ''));
+  // ...and a fresh resolution attempted against the real Zovo URL instead of trusting the bad cache.
+  await page.waitForFunction(() => window.__requests.some(request => request.url === 'https://go.zovo.ink/abc'));
+});
+
+test('DODI keeps a single roving tab and a resolvable tabpanel label for an empty search results page', async t => {
+  const page = await start(t, '<p>No results.</p>', { path: '/?s=zzzz' });
+  await page.waitForFunction(() => document.querySelectorAll('[role="tab"][tabindex="0"]').length === 1);
+  const labelledby = await page.locator('#dodi-main-panel').getAttribute('aria-labelledby');
+  assert.equal(await page.locator('#' + labelledby).count(), 1);
 });
 
 test('DODI distinguishes completed empty pinned lists from loading', async t => {
@@ -249,6 +298,7 @@ test('DODI preserves legitimate sections, warning colors, wrapped sizes, and sin
     <p style="color: red">Warning</p><img src="bad-image" onerror="window.__injected = true">
     <a href="java&#10;script:alert(1)" onclick="window.__injected = true">Unsafe</a>
     <script>window.__injected = true</script><iframe src="https://unsafe.example"></iframe>
+    <h4 style="color: green">Notes</h4>
     </div></div><h3>Download Links</h3><p>elamigos Update</p>
     <p><a href="https://downloads.example/update">Update</a></p>`;
   const page = await start(t);
@@ -263,6 +313,7 @@ test('DODI preserves legitimate sections, warning colors, wrapped sizes, and sin
   assert.equal(await section.locator('script, iframe, [onclick], [onerror]').count(), 0);
   assert.equal(await section.locator('a').getAttribute('href'), null);
   assert.equal(await section.locator('.dodi-warning').evaluate(el => el.style.color), 'rgb(255, 94, 94)');
+  assert.equal(await section.locator('h4').evaluate(el => el.style.fontSize), '12.5px');
 });
 
 test('DODI strips remote SVG animations that can turn sanitized links into script URLs', async t => {
@@ -323,4 +374,11 @@ test('userscript metadata names the project URLs', () => {
   assert.match(script, /@homepage\s+https:\/\/github\.com\/alfablac\/game-night/);
   assert.match(script, /@homepageURL\s+https:\/\/github\.com\/alfablac\/game-night/);
   assert.match(script, /@supportURL\s+https:\/\/github\.com\/alfablac\/game-night\/issues/);
+});
+
+test('source contains no stray control characters', () => {
+  // Only \n (and \t/\r, if the file ever grows them) are legitimate control characters;
+  // anything else (e.g. a literal NUL slipped into a regex) is a bug, not intentional content.
+  // eslint-disable-next-line no-control-regex
+  assert.doesNotMatch(script, /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/);
 });
