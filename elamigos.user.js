@@ -1,22 +1,23 @@
 // ==UserScript==
-// @bound-url    https://elamigos.site/#/
 // @name         ElAmigos Modern UI
+// @bound-url    https://elamigos.site/#/
 // @namespace    elamigos.modern.ui
-// @version      1.4.5
+// @version      1.4.6
 // @description  Responsive dark ElAmigos interface with 12 latest releases, configurable language highlighting, pagination, A–Z archive, compact cards, technical details, details modal, and video.
 // @downloadURL  https://raw.githubusercontent.com/alfablac/game-night/main/elamigos.user.js
 // @updateURL    https://raw.githubusercontent.com/alfablac/game-night/main/elamigos.user.js
 // @match        https://elamigos.site/*
+// @match        https://www.elamigos.site/*
 // @match        https://filecrypt.cc/*
 // @match        https://www.filecrypt.cc/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_getValue
 // @grant        GM_setValue
-// @grant        GM_deleteValue
 // @grant        GM_registerMenuCommand
 // @grant        GM_addStyle
 // @connect      elamigos.site
 // @connect      www.elamigos.site
+// @connect      fastpic.org
 // @connect      www.keeplinks.org
 // @connect      2captcha.com
 // @run-at       document-start
@@ -58,7 +59,10 @@
         }
 
         function post(message) {
-            window.parent.postMessage({ eaFilecrypt: true, payload: message }, '*');
+            // Only the elamigos.site overlay should receive resolver results (a non-matching targetOrigin is silently dropped).
+            ['https://elamigos.site', 'https://www.elamigos.site'].forEach(function (origin) {
+                window.parent.postMessage({ eaFilecrypt: true, payload: message }, origin);
+            });
         }
 
         function findGoUrl() {
@@ -861,7 +865,7 @@
         });
     }
 
-    function parseHome(doc) {
+    function parseHome(doc, base) {
         var blocks = [];
         var current = null;
         var archiveMode = false;
@@ -887,7 +891,7 @@
                     return;
                 }
 
-                var href = abs(anchor.getAttribute('href'));
+                var href = abs(anchor.getAttribute('href'), base);
                 if (!href || seen[href]) {
                     return;
                 }
@@ -900,6 +904,8 @@
                 var title = txt(clone)
                     .replace(/\[[^\]]*\]/g, '')
                     .replace(/\+?\s*ElAmigos/i, '')
+                    .replace(/(?:\s*\+)+\s*$/, '')
+                    .replace(/\s+/g, ' ')
                     .trim();
                 var entry = { h: href, t: title || text, d: current ? current.date : '', g: text };
 
@@ -973,7 +979,7 @@
     function parseGame(doc, url) {
         var elements = qa('h2, h3, h4, a[href]', doc);
         var firstH2 = q('h2', doc);
-        var rawTitle = firstH2 ? txt(firstH2) : location.pathname.split('/').pop();
+        var rawTitle = firstH2 ? txt(firstH2) : String(url).split(/[?#]/)[0].split('/').pop();
         var titleInfo = splitGameTitle(rawTitle);
         var title = titleInfo.title;
         var description = '';
@@ -1155,9 +1161,24 @@
     function fetchText(url) {
         return new Promise(function (resolve, reject) {
             if (typeof GM_xmlhttpRequest === 'function') {
-                GM_xmlhttpRequest({ url: url, onload: function (response) { resolve(response.responseText); }, onerror: reject });
+                GM_xmlhttpRequest({
+                    url: url,
+                    onload: function (response) {
+                        if (response.status >= 200 && response.status < 300) {
+                            resolve(response.responseText);
+                        } else {
+                            reject(new Error('HTTP ' + response.status + ' for ' + url));
+                        }
+                    },
+                    onerror: reject
+                });
             } else {
-                fetch(url).then(function (response) { return response.text(); }).then(resolve).catch(reject);
+                fetch(url).then(function (response) {
+                    if (!response.ok) {
+                        throw new Error('HTTP ' + response.status + ' for ' + url);
+                    }
+                    return response.text();
+                }).then(resolve).catch(reject);
             }
         });
     }
@@ -1175,15 +1196,28 @@
 
     var indexCacheKey = 'ea-index-v3';
     var indexCacheTtl = 10 * 60 * 1000;
+    var indexPromise = null;
 
     function loadIndex() {
         if (index) {
             return Promise.resolve(index);
         }
+        // Share the in-flight request so views rendered before the index
+        // arrives neither refetch it nor finish out of order.
+        if (indexPromise) {
+            return indexPromise;
+        }
 
         // Refresh the homepage index directly; other pages may use a
         // short-lived cache so new releases appear without manual cleanup.
-        var saved = home ? null : localStorage.getItem(indexCacheKey);
+        var saved = null;
+        if (!home) {
+            try {
+                saved = localStorage.getItem(indexCacheKey);
+            } catch (error) {
+                // Storage may be disabled; fetch a fresh index instead.
+            }
+        }
         if (saved) {
             try {
                 var cached = JSON.parse(saved);
@@ -1198,7 +1232,7 @@
 
         var indexURL = location.origin + '/?ea_index_refresh=' + Date.now();
         var promise = fetchText(indexURL).then(function (text) {
-            return parseHome(new DOMParser().parseFromString(text, 'text/html'));
+            return parseHome(new DOMParser().parseFromString(text, 'text/html'), indexURL);
         }).then(function (data) {
             if (data.recent.length || data.archive.length) {
                 return data;
@@ -1211,7 +1245,7 @@
             throw error;
         });
 
-        return promise.then(function (data) {
+        indexPromise = promise.then(function (data) {
             index = data;
             try {
                 localStorage.setItem(indexCacheKey, JSON.stringify({ savedAt: Date.now(), data: data }));
@@ -1219,7 +1253,11 @@
                 // Storage may be disabled; the in-memory index still works.
             }
             return data;
+        }, function (error) {
+            indexPromise = null;
+            throw error;
         });
+        return indexPromise;
     }
 
     var klKey = String((typeof GM_getValue === 'function' && GM_getValue('ea_kl_key', '')) || '');
@@ -1263,6 +1301,16 @@
 
     function isFilecryptLink(link) {
         return /filecrypt\.cc/i.test(link.h || link);
+    }
+
+    // Strict check for URLs that get framed; isFilecryptLink stays loose because it only toggles visibility.
+    function isFilecryptURL(value) {
+        try {
+            var parsed = new URL(value);
+            return /^https?:$/.test(parsed.protocol) && /^(?:www\.)?filecrypt\.cc$/i.test(parsed.hostname);
+        } catch (error) {
+            return false;
+        }
     }
 
     function klHttp(options) {
@@ -1505,6 +1553,13 @@
                 return;
             }
             var row = state.rows[state.index];
+            if (!row || !isFilecryptURL(row.linkURL)) {
+                output.value += (row && row.filename ? row.filename : 'unknown') + '\nERROR: invalid link\n\n';
+                output.scrollTop = output.scrollHeight;
+                state.index += 1;
+                setTimeout(processNext, 0);
+                return;
+            }
             var token = String(Date.now()) + '-' + Math.random().toString(36).slice(2);
             var linkURL = new URL(row.linkURL);
             linkURL.searchParams.set('__ea_token', token);
@@ -1518,13 +1573,16 @@
         }
 
         function onMessage(event) {
+            if (!/^https:\/\/(?:www\.)?filecrypt\.cc$/i.test(event.origin)) {
+                return;
+            }
             var message = event.data || {};
             var payload = message.payload || {};
             if (!message.eaFilecrypt) {
                 return;
             }
             if (payload.type === 'container-ready' && event.source === containerFrame.contentWindow) {
-                state.rows = payload.rows || [];
+                state.rows = Array.isArray(payload.rows) ? payload.rows : [];
                 if (!state.rows.length) {
                     status.textContent = 'No Filecrypt links found.';
                     return;
@@ -1660,7 +1718,7 @@
                 var host = E('div', { class: 'ea-host' }, [E('strong', { text: hostGroup.name })]);
                 hostGroup.links.forEach(function (link) {
                     host.append(E('a', { href: link.h, target: '_blank', rel: 'noopener', text: link.h }));
-                    if (/filecrypt\.cc/i.test(link.h)) {
+                    if (isFilecryptURL(link.h)) {
                         host.append(E('button', {
                             class: 'ea-btn',
                             type: 'button',
@@ -1764,7 +1822,7 @@
 
     function row(entry) {
         return E('div', { class: 'ea-row' }, [
-            E('a', { class: 'ea-row-title', href: entry.h, text: entry.t, onclick: function (event) { event.preventDefault(); openGame(entry.h); } }),
+            E('a', { class: 'ea-row-title', href: entry.h, text: entry.t, onclick: function (event) { event.preventDefault(); openGame(entry.h, entry.t); } }),
             E('a', { class: 'ea-btn', href: entry.h, target: '_blank', text: '↗' })
         ]);
     }
@@ -1838,7 +1896,7 @@
             });
 
             var selected = letter ? String(letter).toUpperCase() : (query ? '' : '0-9');
-            if (selected !== '0-9' && !/^[A-Z]$/.test(selected)) {
+            if (selected && selected !== '0-9' && !/^[A-Z]$/.test(selected)) {
                 selected = 'A';
             }
 
@@ -1888,15 +1946,18 @@
         return { name: match && match[1] || '', p: +params.get('p') || 1, q: params.get('q') || '', l: params.get('l') || '' };
     }
 
-    function openGame(url) {
+    function openGame(url, title) {
         game(url).then(function (data) {
             modal.hidden = false;
             modalBody.replaceChildren(panel(data, null));
+        }).catch(function () {
+            modal.hidden = false;
+            modalBody.replaceChildren(E('div', { class: 'ea-empty', text: 'Could not load ' + (title || url) }));
         });
     }
 
     function video(url) {
-        var id = '';
+        var id;
         try {
             var videoUrl = new URL(url);
             var path = videoUrl.pathname;
@@ -1928,13 +1989,25 @@
 
     function route() {
         var routeData = parseHash();
+        var view;
         if (routeData.name === 'all') {
-            viewAll(routeData.p);
+            view = viewAll(routeData.p);
         } else if (routeData.name === 'archive') {
-            viewArchive(routeData.q, routeData.l);
+            view = viewArchive(routeData.q, routeData.l);
         } else {
-            viewRecent();
+            view = viewRecent();
         }
+        view.catch(function (error) {
+            console.error('[ElAmigos Modern UI]', error);
+            if (index) {
+                return; // index is loaded, so a newer route has rendered, or this was a render error: leave main as baseline does
+            }
+            main.classList.remove('ea-recent');
+            main.replaceChildren(E('div', { class: 'ea-empty' }, [
+                'Could not load the release index. ',
+                E('button', { class: 'ea-btn', type: 'button', text: 'Try again', onclick: route })
+            ]));
+        });
         qa('.ea-tab').forEach(function (tab) {
             tab.classList.toggle('on', tab.getAttribute('href').indexOf(routeData.name || '/') >= 0);
         });
