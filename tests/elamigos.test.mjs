@@ -509,7 +509,8 @@ test('Filecrypt PoW helpers inject into the page world', () => {
     assert.match(source, /stopPropagation/);
     assert.match(source, /script\.textContent = '\(' \+ run\.toString\(\) \+ '\)\(\);'/);
     assert.match(source, /window\.open\(containerURL, 'ea-filecrypt'\)/);
-    assert.doesNotMatch(source, /__eaPowKicked|__eaSkipPowPause/);
+    assert.match(source, /__eaSkipPowPause/);
+    assert.doesNotMatch(source, /__eaPowKicked/);
 });
 
 test('Filecrypt PoW box click reaches the widget but not document ads listeners', async t => {

@@ -2,7 +2,7 @@
 // @name         ElAmigos Modern UI
 // @bound-url    https://elamigos.site/#/
 // @namespace    elamigos.modern.ui
-// @version      1.5.1
+// @version      1.5.2
 // @description  Responsive dark ElAmigos interface with 12 latest releases, configurable language highlighting, pagination, A–Z archive, compact cards, technical details, details modal, and video.
 // @author       alfablac
 // @downloadURL  https://raw.githubusercontent.com/alfablac/game-night/main/elamigos.user.js
@@ -52,6 +52,17 @@
         function run() {
             if (window.__eaFilecryptPowGuard) return;
             window.__eaFilecryptPowGuard = true;
+
+            try {
+                if (typeof Worker !== 'undefined' && Worker.prototype && !Worker.prototype.__eaSkipPowPause) {
+                    var origPost = Worker.prototype.postMessage;
+                    Worker.prototype.postMessage = function (msg) {
+                        if (msg && msg.cmd === 'pause') return;
+                        return origPost.apply(this, arguments);
+                    };
+                    Worker.prototype.__eaSkipPowPause = true;
+                }
+            } catch (error) { /* keep Filecrypt usable if Worker is frozen */ }
 
             function guardBox() {
                 var box = document.querySelector('#pow-captcha .pow-captcha__box');
@@ -1801,6 +1812,9 @@
                 }
                 if (payload.state === 'working') {
                     status.textContent = 'Solving Filecrypt proof-of-work…';
+                    if (child()) {
+                        try { popup.focus(); } catch (error) { /* ignore */ }
+                    }
                 } else if (payload.state === 'done') {
                     status.textContent = 'Proof-of-work finished. Waiting for the download table…';
                 } else if (payload.state === 'fail') {
