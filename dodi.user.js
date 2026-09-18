@@ -1835,6 +1835,8 @@
 
     // Fetch pinned threads from home page in background when on a page without sticky post
     function fetchHomePagePinned() {
+        state.pinnedLoading = true;
+        state.pinnedError = '';
         requestPage('https://dodi-repacks.site/').then(function (html) {
             var parser = new DOMParser();
             var doc = parser.parseFromString(html, 'text/html');
@@ -1843,12 +1845,15 @@
                 state.pinnedData = remotePinned;
                 savePinnedData(remotePinned);
                 updateTabBadges();
-                if (state.activeTab === 'activation' || state.activeTab === 'exclusive' || state.activeTab === 'trending') {
-                    renderCurrentTab();
-                }
             }
         }).catch(function (err) {
+            state.pinnedError = err.message;
             console.warn('[DODI] Failed to background fetch pinned threads:', err);
+        }).finally(function () {
+            state.pinnedLoading = false;
+            if (state.activeTab === 'activation' || state.activeTab === 'exclusive' || state.activeTab === 'trending') {
+                renderCurrentTab();
+            }
         });
     }
 
@@ -1858,7 +1863,8 @@
         var temp = document.createElement('template'); // inert: no resource loading, no script execution
         temp.innerHTML = html;
 
-        qa('script, iframe, frame, object, embed, base, meta, link', temp.content).forEach(function (el) {
+        // Foreign-content animations can change a URL after attribute validation.
+        qa('script, iframe, frame, object, embed, base, meta, link, svg, math', temp.content).forEach(function (el) {
             el.remove();
         });
 
@@ -2069,7 +2075,7 @@
                     var mirrors = [];
                     liLinks.forEach(function (a, mIdx) {
                         var url = a.getAttribute('href') || '';
-                        if (!url || url.startsWith('javascript:') || /dodi-repacks\.site\/(?:category|tag|author)/i.test(url)) return;
+                        if (!isDownloadUrl(url) || /dodi-repacks\.site\/(?:category|tag|author)/i.test(url)) return;
                         mirrors.push({
                             url: url,
                             label: 'Mirror ' + (mIdx + 1),
@@ -2103,7 +2109,7 @@
             var mirrors = [];
             links.forEach(function (a, mIdx) {
                 var url = a.getAttribute('href') || '';
-                if (!url || url.startsWith('javascript:') || /dodi-repacks\.site\/(?:category|tag|author)/i.test(url)) return;
+                if (!isDownloadUrl(url) || /dodi-repacks\.site\/(?:category|tag|author)/i.test(url)) return;
                 mirrors.push({
                     url: url,
                     label: mirrors.length === 0 ? 'Download' : 'Mirror ' + (mIdx + 1),
@@ -2126,6 +2132,15 @@
         });
 
         return groups;
+    }
+
+    function isDownloadUrl(url) {
+        if (!url) return false;
+        try {
+            return /^(https?:|magnet:)$/.test(new URL(url, location.href).protocol);
+        } catch (e) {
+            return false;
+        }
     }
 
     function getHostName(url) {
@@ -2408,6 +2423,8 @@
     var state = {
         activeTab: 'main',
         pinnedData: { freeActivation: [], exclusive: [], trending: [] },
+        pinnedLoading: false,
+        pinnedError: '',
         mainArticles: [],
         pagination: [],
         searchQuery: '',
@@ -2423,35 +2440,67 @@
 
     function requestPage(url) {
         return new Promise(function (resolve, reject) {
-            if (typeof GM_xmlhttpRequest === 'function') {
-                GM_xmlhttpRequest({
-                    method: 'GET',
-                    url: url,
-                    onload: function (res) {
-                        if (res.status >= 200 && res.status < 400) {
-                            resolve(res.responseText);
-                        } else {
-                            reject(new Error('HTTP status ' + res.status));
+            var request;
+            var timer = setTimeout(function () {
+                fail(new Error('Request timed out'));
+                if (request && typeof request.abort === 'function') request.abort();
+            }, 30000);
+            function succeed(html) {
+                clearTimeout(timer);
+                resolve(html);
+            }
+            function fail(error) {
+                clearTimeout(timer);
+                reject(error);
+            }
+            try {
+                if (typeof GM_xmlhttpRequest === 'function') {
+                    request = GM_xmlhttpRequest({
+                        method: 'GET',
+                        url: url,
+                        onload: function (res) {
+                            if (res.status >= 200 && res.status < 400) {
+                                succeed(res.responseText);
+                            } else {
+                                fail(new Error('HTTP status ' + res.status));
+                            }
+                        },
+                        onerror: function (res) {
+                            fail(new Error('Network error' + (res && res.statusText ? ': ' + res.statusText : '')));
+                        },
+                        ontimeout: function () {
+                            fail(new Error('Request timed out'));
+                        },
+                        onabort: function () {
+                            fail(new Error('Request aborted'));
                         }
-                    },
-                    onerror: function (res) {
-                        reject(new Error('Network error' + (res && res.statusText ? ': ' + res.statusText : '')));
-                    }
-                });
-            } else {
-                fetch(url).then(function (res) {
-                    if (!res.ok) throw new Error('HTTP status ' + res.status);
-                    return res.text();
-                }).then(resolve).catch(reject);
+                    });
+                } else {
+                    request = new AbortController();
+                    fetch(url, { signal: request.signal }).then(function (res) {
+                        if (!res.ok) throw new Error('HTTP status ' + res.status);
+                        return res.text();
+                    }).then(succeed).catch(fail);
+                }
+            } catch (error) {
+                fail(error);
             }
         });
     }
 
+    function updateActiveTabs() {
+        qa('.dodi-tab', appRoot).forEach(function (t) {
+            var selected = t.getAttribute('data-tab') === state.activeTab;
+            t.classList.toggle('active', selected);
+            t.setAttribute('aria-selected', String(selected));
+            t.tabIndex = selected ? 0 : -1;
+        });
+        if (mainViewContainer) mainViewContainer.setAttribute('aria-labelledby', 'dodi-tab-' + state.activeTab);
+    }
+
     function switchTab(tabName) {
         state.activeTab = tabName;
-        qa('.dodi-tab', appRoot).forEach(function (t) {
-            t.classList.toggle('active', t.getAttribute('data-tab') === tabName);
-        });
+        updateActiveTabs();
         renderCurrentTab();
     }
 
@@ -2477,6 +2526,7 @@
             class: 'dodi-search-input',
             type: 'text',
             placeholder: 'Search repacks (e.g. the sims, stalker)...',
+            'aria-label': 'Search repacks',
             value: state.searchQuery,
             onkeydown: function (e) {
                 if (e.key === 'Enter') {
@@ -2517,7 +2567,21 @@
 
         // Tabs
         var navBar = E('nav', { class: 'dodi-nav-bar' });
-        var tabsWrap = E('div', { class: 'dodi-tabs-wrap' });
+        var tabsWrap = E('div', { class: 'dodi-tabs-wrap', role: 'tablist', 'aria-label': 'Repack categories' });
+        tabsWrap.addEventListener('keydown', function (e) {
+            var tab = e.target.closest('.dodi-tab');
+            if (!tab) return;
+            var tabs = qa('.dodi-tab', tabsWrap);
+            var index = tabs.indexOf(tab);
+            if (e.key === 'ArrowRight') index = (index + 1) % tabs.length;
+            else if (e.key === 'ArrowLeft') index = (index - 1 + tabs.length) % tabs.length;
+            else if (e.key === 'Home') index = 0;
+            else if (e.key === 'End') index = tabs.length - 1;
+            else if (e.key !== 'Enter' && e.key !== ' ') return;
+            e.preventDefault();
+            switchTab(tabs[index].getAttribute('data-tab'));
+            tabs[index].focus();
+        });
 
         var tabs = [
             { id: 'main', icon: 'apps', label: 'Main Releases' },
@@ -2533,6 +2597,11 @@
         tabs.forEach(function (tab) {
             var tabEl = E('div', {
                 class: 'dodi-tab' + (state.activeTab === tab.id ? ' active' : ''),
+                id: 'dodi-tab-' + tab.id,
+                role: 'tab',
+                'aria-controls': 'dodi-main-panel',
+                'aria-selected': String(state.activeTab === tab.id),
+                tabindex: state.activeTab === tab.id ? '0' : '-1',
                 'data-tab': tab.id,
                 onclick: function () { switchTab(tab.id); }
             }, [
@@ -2561,6 +2630,9 @@
         if (!searchTab) {
             searchTab = E('div', {
                 class: 'dodi-tab active',
+                id: 'dodi-tab-search',
+                role: 'tab',
+                'aria-controls': 'dodi-main-panel',
                 'data-tab': 'search',
                 onclick: function () { switchTab('search'); }
             }, [
@@ -2570,9 +2642,7 @@
             tabsWrap.append(searchTab);
         }
 
-        qa('.dodi-tab', tabsWrap).forEach(function (t) {
-            t.classList.toggle('active', t.getAttribute('data-tab') === 'search');
-        });
+        updateActiveTabs();
 
         updateSearchTabBadge();
     }
@@ -2947,6 +3017,8 @@
     var modalBody = null;
     var modalDirectLink = null;
     var modalSeq = 0;
+    var modalOpener = null;
+    var modalPreviousOverflow = '';
 
     function ensureModal() {
         if (modalOverlay) return;
@@ -2962,12 +3034,18 @@
             }
         });
 
-        modalBox = E('div', { class: 'dodi-modal-box' });
+        modalBox = E('div', {
+            class: 'dodi-modal-box',
+            role: 'dialog',
+            'aria-modal': 'true',
+            'aria-labelledby': 'dodi-modal-title',
+            tabindex: '-1'
+        });
 
         var head = E('div', { class: 'dodi-modal-head' });
 
         var titleArea = E('div', { class: 'dodi-modal-title-area' });
-        modalTitle = E('h3', { class: 'dodi-modal-title', text: 'Game Details' });
+        modalTitle = E('h3', { class: 'dodi-modal-title', id: 'dodi-modal-title', text: 'Game Details' });
         titleArea.append(modalTitle);
 
         var actions = E('div', { class: 'dodi-modal-actions' });
@@ -3007,22 +3085,44 @@
         }
 
         window.addEventListener('keydown', function (e) {
-            if (e.key === 'Escape' && modalOverlay && !modalOverlay.hidden) {
+            if (!modalOverlay || modalOverlay.hidden) return;
+            if (e.key === 'Escape') {
+                e.preventDefault();
                 closeModal();
+            } else if (e.key === 'Tab') {
+                var focusable = qa('a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), summary, [tabindex="0"]', modalBox)
+                    .filter(function (el) { return el.getClientRects().length > 0; });
+                var first = focusable[0] || modalBox;
+                var last = focusable[focusable.length - 1] || modalBox;
+                if (e.shiftKey && (document.activeElement === first || document.activeElement === modalBox || !modalBox.contains(document.activeElement))) {
+                    e.preventDefault();
+                    last.focus();
+                } else if (!e.shiftKey && (document.activeElement === last || document.activeElement === modalBox || !modalBox.contains(document.activeElement))) {
+                    e.preventDefault();
+                    first.focus();
+                }
             }
         });
     }
 
     function closeModal() {
-        if (!modalOverlay) return;
+        if (!modalOverlay || modalOverlay.hidden) return;
+        ++modalSeq;
         modalOverlay.hidden = true;
-        document.body.style.overflow = '';
+        document.body.style.overflow = modalPreviousOverflow;
+        if (modalOpener && modalOpener.isConnected) modalOpener.focus({ preventScroll: true });
+        modalOpener = null;
     }
 
     function openGameModal(url, fallbackTitle) {
         ensureModal();
+        if (modalOverlay.hidden) {
+            modalOpener = document.activeElement;
+            modalPreviousOverflow = document.body.style.overflow;
+        }
         modalOverlay.hidden = false;
         document.body.style.overflow = 'hidden';
+        modalBox.focus({ preventScroll: true });
 
         var seq = ++modalSeq;
 
@@ -3128,6 +3228,15 @@
     }
 
     // 2. Free Offline Activation Tab
+    function renderPinnedEmpty(label) {
+        return E('div', { class: 'dodi-loading-state' }, [
+            state.pinnedLoading ? E('div', { class: 'dodi-spinner' }) : null,
+            E('span', { text: state.pinnedLoading ? 'Loading ' + label + ' from home page...' :
+                state.pinnedError ? 'Unable to load ' + label + ': ' + state.pinnedError :
+                'No ' + label + ' available.' })
+        ]);
+    }
+
     function renderActivationTab() {
         var head = E('div', { class: 'dodi-section-head' }, [
             E('div', {}, [
@@ -3142,10 +3251,7 @@
         var grid = E('div', { class: 'dodi-cards-grid' });
 
         if (!state.pinnedData.freeActivation || state.pinnedData.freeActivation.length === 0) {
-            grid.append(E('div', { class: 'dodi-loading-state' }, [
-                E('div', { class: 'dodi-spinner' }),
-                E('span', { text: 'Loading Free Offline Activation releases from home page...' })
-            ]));
+            grid.append(renderPinnedEmpty('Free Offline Activation releases'));
         } else {
             state.pinnedData.freeActivation.forEach(function (item) {
                 var card = E('article', { class: 'ea-card dodi-clickable-card' });
@@ -3229,10 +3335,7 @@
         var grid = E('div', { class: 'dodi-cards-grid' });
 
         if (!state.pinnedData.exclusive || state.pinnedData.exclusive.length === 0) {
-            grid.append(E('div', { class: 'dodi-loading-state' }, [
-                E('div', { class: 'dodi-spinner' }),
-                E('span', { text: 'Loading Exclusive Repacks from home page...' })
-            ]));
+            grid.append(renderPinnedEmpty('Exclusive Repacks'));
         } else {
             state.pinnedData.exclusive.forEach(function (item) {
                 var card = E('article', { class: 'ea-card dodi-clickable-card' });
@@ -3315,10 +3418,7 @@
         var list = E('div', { class: 'dodi-ranked-list' });
 
         if (!state.pinnedData.trending || state.pinnedData.trending.length === 0) {
-            list.append(E('div', { class: 'dodi-loading-state' }, [
-                E('div', { class: 'dodi-spinner' }),
-                E('span', { text: 'Loading Trending Repacks from home page...' })
-            ]));
+            list.append(renderPinnedEmpty('Trending Repacks'));
         } else {
             state.pinnedData.trending.forEach(function (item) {
                 var card = E('div', { class: 'dodi-ranked-card dodi-clickable-card' });
@@ -3537,10 +3637,12 @@
                 return Promise.resolve(state.articleCache[item.url]);
             }
             return requestPage(item.url).then(function (html) {
+                if (seq !== state.searchSeq) return;
                 var parsed = parseArticleFromHtml(html, item.url);
                 state.articleCache[item.url] = parsed;
                 return parsed;
             }).catch(function () {
+                if (seq !== state.searchSeq) return;
                 // Fallback basic item
                 var fb = {
                     title: item.title,
@@ -3638,7 +3740,13 @@
             // 5. Mount Modern Application
             appRoot = E('div', { id: 'dodi-app' });
             var headerEl = renderHeader();
-            mainViewContainer = E('main', { class: 'dodi-main' });
+            mainViewContainer = E('main', {
+                class: 'dodi-main',
+                id: 'dodi-main-panel',
+                role: 'tabpanel',
+                'aria-labelledby': 'dodi-tab-' + state.activeTab,
+                tabindex: '0'
+            });
 
             appRoot.append(headerEl, mainViewContainer);
             document.body.append(appRoot);
