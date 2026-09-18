@@ -1901,7 +1901,7 @@
         // controls' id/name as OWN properties (e.g. an <input name="attributes"> shadows
         // form.attributes), which silently defeats the attribute walk below if it trusted those
         // instance properties, so remove first and use Element.prototype accessors afterwards.
-        qa('form, input, button, select, textarea, script, iframe, frame, object, embed, base, meta, link, svg, math, style, noscript', temp.content).forEach(function (el) {
+        qa('form, input, button, select, textarea, dialog, script, iframe, frame, object, embed, base, meta, link, svg, math, style, noscript', temp.content).forEach(function (el) {
             Element.prototype.remove.call(el);
         });
 
@@ -1913,7 +1913,7 @@
                 var name = attrName.toLowerCase();
                 // id/name are stripped too: fetched content lands in the live document via innerHTML,
                 // and a stray id/name can clobber document.getElementById lookups / named globals.
-                if (/^on/i.test(name) || name === 'srcdoc' || name === 'id' || name === 'name' || /^javascript:/i.test(value)) {
+                if (/^on/i.test(name) || name === 'srcdoc' || name === 'popover' || name === 'id' || name === 'name' || /^javascript:/i.test(value)) {
                     Element.prototype.removeAttribute.call(el, attrName);
                     return;
                 }

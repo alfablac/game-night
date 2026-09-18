@@ -402,6 +402,7 @@ test('DODI strips full-viewport overlay styling from collapsible links', async t
   const content = `<div class="sp-wrap"><div class="sp-head">Information</div><div class="sp-body">
     <p style="color: red">Warning</p>
     <a href="https://evil.example/" style="position:fixed;inset:0;z-index:2147483647;opacity:0">Click hijack</a>
+    <dialog open popover style="width:100vw;height:300vh;max-width:none;max-height:none;margin:0"><a href="https://evil.example/">Dialog hijack</a></dialog>
   </div></div>`;
   const page = await start(t);
   await page.locator('[data-tab="exclusive"]').click();
@@ -414,6 +415,8 @@ test('DODI strips full-viewport overlay styling from collapsible links', async t
     position: el.style.position, inset: el.style.inset, top: el.style.top, zIndex: el.style.zIndex, opacity: el.style.opacity
   }));
   assert.deepEqual(style, { position: '', inset: '', top: '', zIndex: '', opacity: '' });
+  // <dialog open> is absolutely positioned by the browser stylesheet, so no inline style reveals it.
+  assert.equal(await section.locator('dialog, [popover]').count(), 0);
   // The unrelated red-warning colour logic must still work.
   assert.equal(await section.locator('.dodi-warning').evaluate(el => el.style.color), 'rgb(255, 94, 94)');
 });
