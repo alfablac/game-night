@@ -2014,6 +2014,7 @@ details.fg-extra > summary:hover {
   };
 
   const gallery = (imgs, start) => {
+    const opener = document.activeElement;
     const m = mk('div', 'fg-modal');
     m.setAttribute('role', 'dialog');
     m.setAttribute('aria-modal', 'true');
@@ -2028,6 +2029,7 @@ details.fg-extra > summary:hover {
       const href = imgs[i].closest('a[href]')?.href;
       const isImage = href && /\.(?:avif|gif|jpe?g|png|webp)(?:[?#]|$)/i.test(href);
       pic.src = isImage ? href : imgs[i].currentSrc || imgs[i].src;
+      pic.alt = imgs[i].alt || `Screenshot ${i + 1}`;
     };
 
     const go = s => {
@@ -2038,8 +2040,15 @@ details.fg-extra > summary:hover {
     const close = mk('button', 'fg-close', '\u00d7');
     const prev = mk('button', 'fg-prev', '\u2039');
     const next = mk('button', 'fg-next', '\u203a');
+    close.setAttribute('aria-label', 'Close image viewer');
+    prev.setAttribute('aria-label', 'Previous image');
+    next.setAttribute('aria-label', 'Next image');
 
-    close.onclick = () => m.remove();
+    const dismiss = () => {
+      m.remove();
+      if (opener?.isConnected) opener.focus({ preventScroll: true });
+    };
+    close.onclick = dismiss;
 
     prev.onclick = e => {
       e.stopPropagation();
@@ -2053,17 +2062,28 @@ details.fg-extra > summary:hover {
 
     m.onclick = e => {
       if (e.target === m) {
-        m.remove();
+        dismiss();
       }
     };
 
     m.onkeydown = e => {
       if (e.key === 'Escape') {
-        m.remove();
+        e.preventDefault();
+        dismiss();
       } else if (e.key === 'ArrowLeft') {
+        e.preventDefault();
         go(i - 1);
       } else if (e.key === 'ArrowRight') {
+        e.preventDefault();
         go(i + 1);
+      } else if (e.key === 'Tab') {
+        const controls = [close, prev, next];
+        const current = controls.indexOf(document.activeElement);
+        const target = current < 0
+          ? (e.shiftKey ? next : close)
+          : controls[(current + (e.shiftKey ? -1 : 1) + controls.length) % controls.length];
+        e.preventDefault();
+        target.focus();
       }
     };
 
@@ -2307,6 +2327,21 @@ details.fg-extra > summary:hover {
         e.preventDefault();
         gallery(imgs, i);
       };
+      if (link) {
+        link.addEventListener('click', e => {
+          if (e.target === link && link.querySelector('img') === im) im.onclick(e);
+        });
+      } else {
+        im.tabIndex = 0;
+        im.setAttribute('role', 'button');
+        im.setAttribute('aria-label', im.alt || `Open screenshot ${i + 1}`);
+        im.onkeydown = e => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            im.click();
+          }
+        };
+      }
     });
   };
 
