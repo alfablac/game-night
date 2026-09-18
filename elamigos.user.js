@@ -2,7 +2,7 @@
 // @name         ElAmigos Modern UI
 // @bound-url    https://elamigos.site/#/
 // @namespace    elamigos.modern.ui
-// @version      1.5.2
+// @version      1.5.9
 // @description  Responsive dark ElAmigos interface with 12 latest releases, configurable language highlighting, pagination, A–Z archive, compact cards, technical details, details modal, and video.
 // @author       alfablac
 // @downloadURL  https://raw.githubusercontent.com/alfablac/game-night/main/elamigos.user.js
@@ -24,6 +24,8 @@
 // @connect      fastpic.org
 // @connect      www.keeplinks.org
 // @connect      2captcha.com
+// @connect      127.0.0.1
+// @connect      localhost
 // @run-at       document-start
 // @changelog    Replaces the game info icon with a styled Info badge and muted YouTube button.
 // ==/UserScript==
@@ -64,6 +66,53 @@
                 }
             } catch (error) { /* keep Filecrypt usable if Worker is frozen */ }
 
+            try {
+                document.hasFocus = function () { return true; };
+            } catch (error) { /* ignore */ }
+            try {
+                Object.defineProperty(document, 'hidden', { configurable: true, get: function () { return false; } });
+                Object.defineProperty(document, 'visibilityState', { configurable: true, get: function () { return 'visible'; } });
+            } catch (error) { /* ignore */ }
+            window.addEventListener('blur', function (event) {
+                event.stopImmediatePropagation();
+            }, true);
+            window.addEventListener('visibilitychange', function (event) {
+                event.stopImmediatePropagation();
+            }, true);
+
+            try {
+                var origOpen = window.open;
+                window.open = function (url) {
+                    var href = url == null ? '' : String(url);
+                    if (!href || href === 'about:blank') {
+                        return null;
+                    }
+                    try {
+                        var host = new URL(href, location.href).hostname;
+                        if (!/(^|\.)filecrypt\.cc$/i.test(host)) {
+                            return null;
+                        }
+                    } catch (error) {
+                        return null;
+                    }
+                    return origOpen.apply(this, arguments);
+                };
+            } catch (error) { /* ignore */ }
+
+            try {
+                if (!EventTarget.prototype.__eaPowAdHook) {
+                    var origListen = EventTarget.prototype.addEventListener;
+                    EventTarget.prototype.addEventListener = function (type, listener, options) {
+                        var capture = options === true || (options && options.capture);
+                        if ((type === 'click' || type === 'pointerdown' || type === 'mousedown') && capture && (this === document || this === window) && typeof listener === 'function') {
+                            return origListen.call(this, type, function () { /* Filecrypt ads */ }, options);
+                        }
+                        return origListen.call(this, type, listener, options);
+                    };
+                    EventTarget.prototype.__eaPowAdHook = true;
+                }
+            } catch (error) { /* EventTarget frozen */ }
+
             function guardBox() {
                 var box = document.querySelector('#pow-captcha .pow-captcha__box');
                 if (!box) {
@@ -78,10 +127,67 @@
                 }, false);
             }
 
+            function sigReady() {
+                try {
+                    return performance.getEntriesByType('resource').some(function (entry) {
+                        return /\/js\/s\.js/i.test(entry.name);
+                    });
+                } catch (error) {
+                    return false;
+                }
+            }
+
+            function clickOnce() {
+                var root = document.getElementById('pow-captcha');
+                var state = root && root.getAttribute('data-state');
+                if (state && state !== 'idle') return;
+                var box = root && root.querySelector('.pow-captcha__box');
+                if (!box) {
+                    clickOnce.waits = (clickOnce.waits || 0) + 1;
+                    if (clickOnce.waits <= 80) setTimeout(clickOnce, 250);
+                    return;
+                }
+                if (!sigReady() && (clickOnce.sigWait || 0) < 8) {
+                    clickOnce.sigWait = (clickOnce.sigWait || 0) + 1;
+                    setTimeout(clickOnce, 250);
+                    return;
+                }
+                if (window.__eaPowClicked) return;
+                window.__eaPowClicked = true;
+                box.click();
+            }
+
+            function armForm() {
+                var form = document.getElementById('cform');
+                if (!form) {
+                    armForm.waits = (armForm.waits || 0) + 1;
+                    if (armForm.waits <= 80) setTimeout(armForm, 250);
+                    return;
+                }
+                if (form.__eaPowHold) return;
+                form.__eaPowHold = true;
+                form.addEventListener('submit', function (event) {
+                    var data = form.querySelector('input[name="pow_data"]');
+                    if (!data || data.value || form.__eaPowHeld) return;
+                    form.__eaPowHeld = true;
+                    event.preventDefault();
+                    event.stopImmediatePropagation();
+                    var tries = 0;
+                    var timer = setInterval(function () {
+                        tries += 1;
+                        if ((data.value && data.value.length) || tries > 30) {
+                            clearInterval(timer);
+                            try { form.requestSubmit(); } catch (err) { form.submit(); }
+                        }
+                    }, 100);
+                }, true);
+            }
+
             guardBox();
+            armForm();
+            setTimeout(clickOnce, 900);
         }
 
-        run();
         try {
             var script = document.createElement('script');
             script.textContent = '(' + run.toString() + ')();';
@@ -168,9 +274,6 @@
                 var goURL = findGoUrl();
                 if (goURL) {
                     post({ type: 'link-result', token: token, ok: true, goURL: goURL });
-                    setTimeout(function () {
-                        location.href = goURL;
-                    }, 250);
                     return;
                 }
                 await sleep(250);
@@ -810,6 +913,29 @@
         .ea-modal-body .ea-btn { font-size: 13px; }
         .ea-video { display: block; width: 100%; height: auto; aspect-ratio: 16 / 9; border: 0; }
         .ea-empty { padding: 18px; color: var(--ea-muted); }
+        .ea-modal[aria-label="Filecrypt resolver"] .ea-box { width: min(640px, 100%); }
+        .ea-modal[aria-label="Filecrypt resolver"] .ea-empty { padding: 12px 16px; }
+        .ea-fc-results {
+            display: block;
+            width: 100%;
+            min-height: 180px;
+            margin: 0;
+            padding: 12px 14px;
+            border: 0;
+            border-top: 1px solid var(--ea-border);
+            background: #0c1218;
+            color: var(--ea-text-strong);
+            font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            resize: vertical;
+        }
+        .ea-fc-results::placeholder { color: var(--ea-muted); }
+        .ea-fc-toolbar {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            padding: 10px 16px 14px;
+            border-top: 1px solid var(--ea-border);
+        }
         .ea-spin { color: var(--ea-accent); }
         @media (max-width: 850px) {
             .ea-panel { grid-template-columns: 105px 1fr; }
@@ -1733,9 +1859,16 @@
         var title = E('strong', { text: 'Filecrypt resolver' });
         var close = E('button', { class: 'ea-btn', type: 'button', text: 'Close' });
         var status = E('div', { class: 'ea-empty', text: 'Opening Filecrypt…' });
-        var output = E('textarea', { class: 'ea-fc-results', readonly: '', placeholder: 'Resolved /Go/ URLs will appear here' });
-        var state = { rows: [], index: 0, pending: null, powState: '' };
+        var output = E('textarea', { class: 'ea-fc-results', readonly: '', placeholder: 'Resolved /Go/ URLs will appear here', 'aria-label': 'Resolved Filecrypt links' });
+        var copyBtn = E('button', { class: 'ea-btn', type: 'button', text: 'Copy links' });
+        var jdBtn = E('button', { class: 'ea-btn', type: 'button', text: 'Send to JDownloader' });
+        var toolbar = E('div', { class: 'ea-fc-toolbar' }, [copyBtn, jdBtn]);
+        var state = { rows: [], index: 0, pending: null, powState: '', workingSince: 0, stallReload: false, postRetry: false };
         var popup = null;
+
+        function goUrls() {
+            return (output.value.match(/https:\/\/(?:www\.)?filecrypt\.cc\/Go\/\S+/gi) || []);
+        }
 
         function child() {
             return popup && !popup.closed ? popup : null;
@@ -1750,6 +1883,7 @@
 
         function closeOverlay() {
             window.removeEventListener('message', onMessage);
+            clearInterval(stallTimer);
             if (child()) {
                 try { popup.close(); } catch (error) { /* ignore */ }
             }
@@ -1762,6 +1896,9 @@
         function processNext() {
             if (state.index >= state.rows.length) {
                 status.textContent = 'Finished: ' + state.rows.length + ' item(s)';
+                if (child()) {
+                    try { popup.close(); } catch (error) { /* ignore */ }
+                }
                 return;
             }
             var row = state.rows[state.index];
@@ -1807,15 +1944,28 @@
                     state.powState = payload.state;
                 }
                 if ((payload.state === 'working' || payload.state === 'idle') && previous === 'done') {
+                    if (!state.postRetry && child()) {
+                        state.postRetry = true;
+                        status.textContent = 'Filecrypt rejected the proof. Retrying in the Filecrypt tab…';
+                        try { popup.location.reload(); } catch (error) { /* ignore */ }
+                        return;
+                    }
                     status.textContent = 'Filecrypt rejected the proof and issued a new captcha.';
                     return;
                 }
+                if (payload.state === 'idle' && previous !== 'done') {
+                    state.workingSince = 0;
+                }
                 if (payload.state === 'working') {
+                    if (!state.workingSince) {
+                        state.workingSince = Date.now();
+                    }
                     status.textContent = 'Solving Filecrypt proof-of-work…';
                     if (child()) {
                         try { popup.focus(); } catch (error) { /* ignore */ }
                     }
                 } else if (payload.state === 'done') {
+                    state.workingSince = 0;
                     status.textContent = 'Proof-of-work finished. Waiting for the download table…';
                 } else if (payload.state === 'fail') {
                     status.textContent = 'Filecrypt proof-of-work failed.';
@@ -1855,22 +2005,63 @@
 
         header.append(title, close);
         close.addEventListener('click', closeOverlay);
+        copyBtn.addEventListener('click', function () {
+            copyLinks(goUrls(), copyBtn);
+        });
+        jdBtn.addEventListener('click', function () {
+            var urls = goUrls();
+            if (!urls.length) {
+                return;
+            }
+            var restore = jdBtn.textContent;
+            var done = function (ok) {
+                jdBtn.textContent = ok ? 'Sent to JDownloader' : 'JDownloader offline';
+                setTimeout(function () { jdBtn.textContent = restore; }, 1800);
+            };
+            if (typeof GM_xmlhttpRequest !== 'function') {
+                done(false);
+                return;
+            }
+            GM_xmlhttpRequest({
+                method: 'POST',
+                url: 'http://127.0.0.1:9666/flash/add',
+                data: 'urls=' + encodeURIComponent(urls.join('\r\n')),
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                onload: function (response) { done(response.status >= 200 && response.status < 300); },
+                onerror: function () { done(false); }
+            });
+        });
         overlay.addEventListener('click', function (event) {
             if (event.target === overlay) {
                 closeOverlay();
             }
         });
-        box.append(header, status, output);
+        box.append(header, status, output, toolbar);
         overlay.append(box);
         bindModalKeys(overlay, closeOverlay);
         window.addEventListener('message', onMessage);
+        var stallTimer = setInterval(function () {
+            if (!overlay.isConnected) {
+                clearInterval(stallTimer);
+                return;
+            }
+            if (state.powState !== 'working' || state.stallReload || !child() || !state.workingSince) {
+                return;
+            }
+            if (Date.now() - state.workingSince < 180000) {
+                return;
+            }
+            state.stallReload = true;
+            status.textContent = 'Proof-of-work stalled. Retrying in the Filecrypt tab…';
+            try { popup.location.reload(); } catch (error) { /* ignore */ }
+        }, 5000);
         app.append(overlay);
         if (!popup) {
             overlay.focus();
             status.textContent = 'Popup blocked. Open Filecrypt in a tab (first-party cookies).';
             offerOpenSeparately();
         } else {
-            status.textContent = 'Opened Filecrypt in a tab. Click “I am a human” once if asked.';
+            status.textContent = 'Opened Filecrypt in a tab. Solving proof-of-work…';
             try { popup.focus(); } catch (error) { /* ignore */ }
         }
     }
