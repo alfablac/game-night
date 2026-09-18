@@ -152,7 +152,8 @@
 
     var abs = function (url, base) {
         try {
-            return new URL(url, base || location.href).href;
+            var parsed = new URL(url, base || location.href);
+            return /^https?:$/.test(parsed.protocol) ? parsed.href : '';
         } catch (error) {
             return '';
         }
@@ -755,6 +756,8 @@
     var main;
     var modal;
     var modalBody;
+    var modalRequest = 0;
+    var modalOpener;
 
     function coverCacheDb() {
         if (coverDbPromise) {
@@ -1163,6 +1166,7 @@
             if (typeof GM_xmlhttpRequest === 'function') {
                 GM_xmlhttpRequest({
                     url: url,
+                    timeout: 30000,
                     onload: function (response) {
                         if (response.status >= 200 && response.status < 300) {
                             resolve(response.responseText);
@@ -1170,15 +1174,25 @@
                             reject(new Error('HTTP ' + response.status + ' for ' + url));
                         }
                     },
-                    onerror: reject
+                    onerror: reject,
+                    ontimeout: function () { reject(new Error('Request timed out for ' + url)); },
+                    onabort: function () { reject(new Error('Request aborted for ' + url)); }
                 });
             } else {
-                fetch(url).then(function (response) {
+                var controller = new AbortController();
+                var timer = setTimeout(function () { controller.abort(); }, 30000);
+                fetch(url, { signal: controller.signal }).then(function (response) {
                     if (!response.ok) {
                         throw new Error('HTTP ' + response.status + ' for ' + url);
                     }
                     return response.text();
-                }).then(resolve).catch(reject);
+                }).then(function (text) {
+                    clearTimeout(timer);
+                    resolve(text);
+                }, function (error) {
+                    clearTimeout(timer);
+                    reject(error);
+                });
             }
         });
     }
@@ -1197,6 +1211,14 @@
     var indexCacheKey = 'ea-index-v3';
     var indexCacheTtl = 10 * 60 * 1000;
     var indexPromise = null;
+
+    function validIndex(data) {
+        return data && ['recent', 'archive', 'all'].every(function (key) {
+            return Array.isArray(data[key]) && data[key].every(function (entry) {
+                return entry && typeof entry.t === 'string' && typeof entry.h === 'string' && abs(entry.h);
+            });
+        }) && data.all.length > 0;
+    }
 
     function loadIndex() {
         if (index) {
@@ -1221,7 +1243,8 @@
         if (saved) {
             try {
                 var cached = JSON.parse(saved);
-                if (cached && cached.data && cached.savedAt && Date.now() - cached.savedAt < indexCacheTtl) {
+                if (cached && validIndex(cached.data) && typeof cached.savedAt === 'number'
+                    && Date.now() >= cached.savedAt && Date.now() - cached.savedAt < indexCacheTtl) {
                     index = cached.data;
                     return Promise.resolve(index);
                 }
@@ -1246,6 +1269,9 @@
         });
 
         indexPromise = promise.then(function (data) {
+            if (!validIndex(data)) {
+                throw new Error('No releases found in the index');
+            }
             index = data;
             try {
                 localStorage.setItem(indexCacheKey, JSON.stringify({ savedAt: Date.now(), data: data }));
@@ -1253,7 +1279,7 @@
                 // Storage may be disabled; the in-memory index still works.
             }
             return data;
-        }, function (error) {
+        }).catch(function (error) {
             indexPromise = null;
             throw error;
         });
@@ -1946,13 +1972,31 @@
         return { name: match && match[1] || '', p: +params.get('p') || 1, q: params.get('q') || '', l: params.get('l') || '' };
     }
 
+    function closeGameModal() {
+        modalRequest += 1;
+        modal.hidden = true;
+        if (modalOpener && modalOpener.isConnected) {
+            modalOpener.focus();
+        }
+    }
+
+    function showGameModal(content) {
+        modalBody.replaceChildren(content);
+        modal.hidden = false;
+        q('.ea-modal-head button', modal).focus();
+    }
+
     function openGame(url, title) {
+        var request = ++modalRequest;
+        modalOpener = document.activeElement;
         game(url).then(function (data) {
-            modal.hidden = false;
-            modalBody.replaceChildren(panel(data, null));
+            if (request === modalRequest) {
+                showGameModal(panel(data, null));
+            }
         }).catch(function () {
-            modal.hidden = false;
-            modalBody.replaceChildren(E('div', { class: 'ea-empty', text: 'Could not load ' + (title || url) }));
+            if (request === modalRequest) {
+                showGameModal(E('div', { class: 'ea-empty', text: 'Could not load ' + (title || url) }));
+            }
         });
     }
 
@@ -2009,7 +2053,8 @@
             ]));
         });
         qa('.ea-tab').forEach(function (tab) {
-            tab.classList.toggle('on', tab.getAttribute('href').indexOf(routeData.name || '/') >= 0);
+            var activeRoute = routeData.name === 'all' || routeData.name === 'archive' ? routeData.name : '';
+            tab.classList.toggle('on', tab.getAttribute('href') === '#/' + activeRoute);
         });
     }
 
@@ -2066,10 +2111,28 @@
         header.append(nav);
 
         main = E('main', { class: 'ea-main' });
-        modal = E('div', { class: 'ea-modal', hidden: '', onclick: function (event) { if (event.target === modal) { modal.hidden = true; } } });
+        modal = E('div', { class: 'ea-modal', hidden: '', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Game details',
+            onclick: function (event) { if (event.target === modal) { closeGameModal(); } },
+            onkeydown: function (event) {
+                if (event.key === 'Escape') {
+                    event.preventDefault();
+                    closeGameModal();
+                } else if (event.key === 'Tab') {
+                    var focusable = qa('a[href], button, input, textarea, summary, [tabindex]', modal).filter(function (element) {
+                        return !element.disabled && element.tabIndex >= 0 && element.getClientRects().length;
+                    });
+                    var first = focusable[0];
+                    var last = focusable[focusable.length - 1];
+                    if ((event.shiftKey && document.activeElement === first) || (!event.shiftKey && document.activeElement === last)) {
+                        event.preventDefault();
+                        (event.shiftKey ? last : first).focus();
+                    }
+                }
+            }
+        });
         var modalBox = E('div', { class: 'ea-box' });
         var modalHeader = E('div', { class: 'ea-modal-head' });
-        modalHeader.append(E('button', { class: 'ea-btn', text: 'Close', onclick: function () { modal.hidden = true; } }));
+        modalHeader.append(E('button', { class: 'ea-btn', text: 'Close', onclick: closeGameModal }));
         modalBody = E('div', { class: 'ea-modal-body' });
         modalBox.append(modalHeader, modalBody);
         modal.append(modalBox);
