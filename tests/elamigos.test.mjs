@@ -40,6 +40,9 @@ async function open(t, { url = 'https://elamigos.site/#/all', html = indexHTML, 
         if (request.isNavigationRequest() && request.url().startsWith('https://elamigos.site/')) {
             return route.fulfill({ contentType: 'text/html', body: '<!doctype html><html><head></head><body>' + html + '</body></html>' });
         }
+        if (request.isNavigationRequest() && /^https:\/\/(?:www\.)?filecrypt\.cc\//i.test(request.url())) {
+            return route.fulfill({ contentType: 'text/html', body: '<!doctype html><title>Filecrypt</title><body></body></html>' });
+        }
         if (useFetch && request.url().includes('ea_index_refresh=')) {
             if (fetchHang) return;
             return route.fulfill({ status: fetchStatus, contentType: 'text/html', body: fetchBody });
@@ -295,23 +298,23 @@ test('Filecrypt messages check origin and frame source, and tolerate malformed r
     await page.getByRole('checkbox', { name: 'Show Filecrypt' }).check();
     await page.getByRole('link', { name: 'Alpha', exact: true }).click();
     await respond(page, '/data/alpha.html', gameHTML('Alpha') + '<a href="https://filecrypt.cc/Container/a.html">Filecrypt</a>');
+    const popupPromise = page.waitForEvent('popup');
     await page.getByRole('button', { name: 'Resolve Filecrypt' }).click();
+    const popup = await popupPromise;
     await page.evaluate(() => {
-        const frame = document.querySelector('iframe[title="Filecrypt verification"]');
         const data = { eaFilecrypt: true, payload: { type: 'container-ready', rows: [{ filename: 'Untrusted', linkURL: 'https://filecrypt.cc/Link/a.html' }] } };
-        window.dispatchEvent(new MessageEvent('message', { origin: 'https://evil.test', source: frame.contentWindow, data }));
+        window.dispatchEvent(new MessageEvent('message', { origin: 'https://evil.test', source: window, data }));
         window.dispatchEvent(new MessageEvent('message', { origin: 'https://filecrypt.cc', source: window, data }));
     });
-    assert.equal(await page.locator('iframe[title="Filecrypt link resolver"]').count(), 0);
-    await page.evaluate(() => {
-        const frame = document.querySelector('iframe[title="Filecrypt verification"]');
-        window.dispatchEvent(new MessageEvent('message', {
-            origin: 'https://filecrypt.cc', source: frame.contentWindow,
-            data: { eaFilecrypt: true, payload: { type: 'container-ready', rows: [null, { filename: 'Invalid', linkURL: 'javascript:alert(1)' }] } }
-        }));
+    assert.equal(await page.locator('.ea-fc-results').inputValue(), '');
+    await popup.evaluate(() => {
+        window.opener.postMessage({
+            eaFilecrypt: true,
+            payload: { type: 'container-ready', rows: [null, { filename: 'Invalid', linkURL: 'javascript:alert(1)' }] }
+        }, '*');
     });
     await page.waitForFunction(() => document.querySelector('.ea-fc-results').value.includes('Invalid\nERROR: invalid link'));
-    assert.equal(await page.locator('iframe[title="Filecrypt link resolver"]').count(), 0);
+    assert.equal(await page.locator('iframe[title="Filecrypt verification"]').count(), 0);
     assert.deepEqual(await page.evaluate(() => window.__errors), []);
 });
 
@@ -391,26 +394,20 @@ test('Filecrypt overlay keeps Escape and rejects off-site /Go/ URLs', async t =>
     await page.getByRole('checkbox', { name: 'Show Filecrypt' }).check();
     await page.getByRole('link', { name: 'Alpha', exact: true }).click();
     await respond(page, '/data/alpha.html', gameHTML('Alpha') + '<a href="https://filecrypt.cc/Container/a.html">Filecrypt</a>');
+    const popupPromise = page.waitForEvent('popup');
     await page.getByRole('button', { name: 'Resolve Filecrypt' }).click();
     const overlay = page.locator('.ea-modal[aria-label="Filecrypt resolver"]');
     await overlay.waitFor();
-    await page.evaluate(() => {
-        const frame = document.querySelector('iframe[title="Filecrypt verification"]');
-        window.dispatchEvent(new MessageEvent('message', {
-            origin: 'https://filecrypt.cc',
-            source: frame.contentWindow,
-            data: { eaFilecrypt: true, payload: { type: 'container-ready', rows: [{ filename: 'Pack', linkURL: 'https://filecrypt.cc/Link/a.html' }] } }
-        }));
+    const popup = await popupPromise;
+    assert.equal(await page.locator('iframe[title="Filecrypt verification"]').count(), 0);
+    await popup.evaluate(() => {
+        window.opener.postMessage({ eaFilecrypt: true, payload: { type: 'container-ready', rows: [{ filename: 'Pack', linkURL: 'https://filecrypt.cc/Link/a.html' }] } }, '*');
     });
-    await page.locator('iframe[title="Filecrypt link resolver"]').waitFor();
-    await page.evaluate(() => {
-        const frame = document.querySelector('iframe[title="Filecrypt link resolver"]');
-        const token = new URL(frame.src).searchParams.get('__ea_token');
-        window.dispatchEvent(new MessageEvent('message', {
-            origin: 'https://filecrypt.cc',
-            source: frame.contentWindow,
-            data: { eaFilecrypt: true, payload: { type: 'link-result', token, ok: true, goURL: 'https://evil.test/Go/x.html' } }
-        }));
+    await popup.waitForURL(/__ea_token=/, { timeout: 5_000 });
+    await page.waitForFunction(() => /Resolving 1\/1/.test(document.querySelector('.ea-empty')?.innerText || ''));
+    await popup.evaluate(() => {
+        const token = new URL(location.href).searchParams.get('__ea_token');
+        window.opener.postMessage({ eaFilecrypt: true, payload: { type: 'link-result', token, ok: true, goURL: 'https://evil.test/Go/x.html' } }, '*');
     });
     await page.waitForFunction(() => document.querySelector('.ea-fc-results').value.includes('ERROR'));
     assert.equal(await page.evaluate(() => document.querySelector('.ea-fc-results').value.includes('evil.test')), false);
@@ -426,22 +423,22 @@ test('Filecrypt Link page skips an off-site /Go/ candidate before the real one',
     await page.getByRole('checkbox', { name: 'Show Filecrypt' }).check();
     await page.getByRole('link', { name: 'Alpha', exact: true }).click();
     await respond(page, '/data/alpha.html', gameHTML('Alpha') + '<a href="https://filecrypt.cc/Container/a.html">Filecrypt</a>');
-    await page.getByRole('button', { name: 'Resolve Filecrypt' }).click();
-    await page.locator('.ea-modal[aria-label="Filecrypt resolver"]').waitFor();
-    await page.route('https://filecrypt.cc/Link/real.html**', route => route.fulfill({
+    await page.context().route('https://filecrypt.cc/Link/real.html**', route => route.fulfill({
         contentType: 'text/html',
         body: '<html><body>'
             + '<a href="https://ads.example/Go/x.html">Ad</a>'
             + '<a href="/Go/real.html">Real</a>'
             + '</body></html>'
     }));
-    await page.evaluate(() => {
-        const frame = document.querySelector('iframe[title="Filecrypt verification"]');
-        window.dispatchEvent(new MessageEvent('message', {
-            origin: 'https://filecrypt.cc',
-            source: frame.contentWindow,
-            data: { eaFilecrypt: true, payload: { type: 'container-ready', rows: [{ filename: 'Pack', linkURL: 'https://filecrypt.cc/Link/real.html' }] } }
-        }));
+    const popupPromise = page.waitForEvent('popup');
+    await page.getByRole('button', { name: 'Resolve Filecrypt' }).click();
+    await page.locator('.ea-modal[aria-label="Filecrypt resolver"]').waitFor();
+    const popup = await popupPromise;
+    await popup.evaluate(() => {
+        window.opener.postMessage({
+            eaFilecrypt: true,
+            payload: { type: 'container-ready', rows: [{ filename: 'Pack', linkURL: 'https://filecrypt.cc/Link/real.html' }] }
+        }, '*');
     });
     await page.waitForFunction(() => document.querySelector('.ea-fc-results').value.includes('Pack\n'));
     const output = await page.locator('.ea-fc-results').inputValue();
@@ -455,26 +452,23 @@ async function openFilecryptOverlay(t, { useClock = false } = {}) {
     await page.getByRole('checkbox', { name: 'Show Filecrypt' }).check();
     await page.getByRole('link', { name: 'Alpha', exact: true }).click();
     await respond(page, '/data/alpha.html', gameHTML('Alpha') + '<a href="https://filecrypt.cc/Container/a.html">Filecrypt</a>');
+    const popupPromise = page.waitForEvent('popup');
     await page.getByRole('button', { name: 'Resolve Filecrypt' }).click();
     const overlay = page.locator('.ea-modal[aria-label="Filecrypt resolver"]');
     await overlay.waitFor();
-    return { page, overlay };
+    const popup = await popupPromise;
+    return { page, overlay, popup };
 }
 
-async function postPowStatus(page, state) {
-    await page.evaluate(state => {
-        const frame = document.querySelector('iframe[title="Filecrypt verification"]');
-        window.dispatchEvent(new MessageEvent('message', {
-            origin: 'https://filecrypt.cc',
-            source: frame.contentWindow,
-            data: { eaFilecrypt: true, payload: { type: 'pow-status', state } }
-        }));
+async function postPowStatus(popup, state) {
+    await popup.evaluate(state => {
+        window.opener.postMessage({ eaFilecrypt: true, payload: { type: 'pow-status', state } }, '*');
     }, state);
 }
 
 test('Filecrypt overlay keeps Solving at 8s when the PoW is working', async t => {
-    const { page, overlay } = await openFilecryptOverlay(t, { useClock: true });
-    await postPowStatus(page, 'working');
+    const { page, overlay, popup } = await openFilecryptOverlay(t, { useClock: true });
+    await postPowStatus(popup, 'working');
     assert.match(await overlay.locator('.ea-empty').innerText(), /Solving Filecrypt proof-of-work/);
     await page.clock.fastForward(8000);
     const text = await overlay.locator('.ea-empty').innerText();
@@ -516,30 +510,27 @@ async function openFilecrypt(t, html) {
 }
 
 test('Filecrypt PoW helpers inject into the page world', () => {
-    assert.match(source, /Worker wrap and the click must also run in the page world/);
+    assert.match(source, /the hook must also run in the page/);
     assert.match(source, /script\.textContent = '\(' \+ run\.toString\(\) \+ '\)\(\);'/);
+    assert.match(source, /window\.open\(containerURL, 'ea-filecrypt'\)/);
 });
 
-test('Filecrypt page clicks the PoW checkbox and drops worker pause messages', async t => {
+test('Filecrypt page starts PoW via the captured start handler and drops worker pause messages', async t => {
     const page = await openFilecrypt(t, `
         <div class="pow-captcha" id="pow-captcha" data-state="idle">
             <div class="pow-captcha__box" role="checkbox">I am a human</div>
         </div>
         <script>
-            window.__powClicks = 0;
-            window.__powPointers = 0;
-            document.querySelector('.pow-captcha__box').addEventListener('pointerdown', function () {
-                window.__powPointers += 1;
-            });
+            window.__powStarts = 0;
             document.querySelector('.pow-captcha__box').addEventListener('click', function () {
-                window.__powClicks += 1;
+                window.__powStarts += 1;
                 document.getElementById('pow-captcha').setAttribute('data-state', 'working');
             });
         </script>
     `);
-    await page.waitForFunction(() => window.__powClicks >= 1 && window.__powPointers >= 1);
+    await page.waitForFunction(() => window.__powStarts >= 1);
     await page.waitForTimeout(400);
-    assert.ok(await page.evaluate(() => window.__powClicks <= 2 && window.__powPointers <= 2));
+    assert.equal(await page.evaluate(() => window.__powStarts), 1);
     const echoed = await page.evaluate(async () => {
         const worker = new Worker(URL.createObjectURL(new Blob(
             ['self.onmessage = function (e) { self.postMessage(e.data); };'],
@@ -573,6 +564,7 @@ test('Filecrypt PoW does not keep clicking an idle widget', async t => {
     await page.waitForFunction(() => window.__powClicks >= 1);
     await page.waitForTimeout(2500);
     assert.equal(await page.evaluate(() => window.__powClicks), 1);
+    assert.equal(await page.evaluate(() => window.__eaPowKicked), true);
 });
 
 test('userscript metadata names the author and project URLs', () => {

@@ -2,7 +2,7 @@
 // @name         ElAmigos Modern UI
 // @bound-url    https://elamigos.site/#/
 // @namespace    elamigos.modern.ui
-// @version      1.4.9
+// @version      1.5.0
 // @description  Responsive dark ElAmigos interface with 12 latest releases, configurable language highlighting, pagination, A–Z archive, compact cards, technical details, details modal, and video.
 // @author       alfablac
 // @downloadURL  https://raw.githubusercontent.com/alfablac/game-night/main/elamigos.user.js
@@ -35,15 +35,20 @@
 
     if (isFilecrypt) {
         installFilecryptPow();
-        if (window.top !== window || window.opener) {
+        var eaToken = '';
+        try {
+            eaToken = new URL(location.href).searchParams.get('__ea_token') || '';
+        } catch (error) { /* keep empty token */ }
+        if (window.top !== window || window.opener || eaToken) {
             startFilecryptFrame();
         }
         return;
     }
 
-    // Filecrypt's widget (pow_captcha.js) starts SHA-1 work on a click and pauses the
-    // worker on window.blur. Tampermonkey with @grant runs in an isolated world, so the
-    // Worker wrap and the click must also run in the page world or they miss the widget.
+    // Filecrypt pow_captcha.js starts SHA-1 from box.click or from start() with no
+    // event (its own autosolve path). Extra clicks restart the worker and open ads.
+    // Capture start via addEventListener and call it once, like autosolve.
+    // Tampermonkey @grant is an isolated world: the hook must also run in the page.
     function installFilecryptPow() {
         function run() {
             if (window.__eaFilecryptPowStarted) return;
@@ -59,36 +64,38 @@
                 }
             } catch (error) { /* keep Filecrypt usable if Worker is frozen */ }
 
-            function startWhenReady() {
-                var clicked = false;
-                var waits = 0;
-                function tick() {
-                    var root = document.getElementById('pow-captcha');
-                    if (root && root.getAttribute('data-state') !== 'idle') return;
-                    if (clicked || waits > 40) return;
-                    var box = root && root.querySelector('.pow-captcha__box');
-                    if (!box) {
-                        waits += 1;
-                        setTimeout(tick, 250);
-                        return;
-                    }
-                    // One click starts the worker. More clicks restart it, spawn ads, and slow SHA-1.
-                    clicked = true;
-                    try {
-                        box.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, pointerType: 'mouse' }));
-                    } catch (error) {
-                        box.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, cancelable: true }));
-                    }
-                    box.click();
+            try {
+                if (!EventTarget.prototype.__eaPowHook) {
+                    var origListen = EventTarget.prototype.addEventListener;
+                    EventTarget.prototype.addEventListener = function (type, listener, options) {
+                        if (type === 'click' && typeof listener === 'function') {
+                            try {
+                                if (this && this.classList && this.classList.contains('pow-captcha__box')) {
+                                    window.__eaPowStart = listener;
+                                }
+                            } catch (error) { /* ignore */ }
+                        }
+                        return origListen.call(this, type, listener, options);
+                    };
+                    EventTarget.prototype.__eaPowHook = true;
                 }
-                tick();
+            } catch (error) { /* EventTarget frozen */ }
+
+            function kick() {
+                var root = document.getElementById('pow-captcha');
+                if (root && root.getAttribute('data-state') !== 'idle') return;
+                var fn = window.__eaPowStart;
+                if (typeof fn === 'function') {
+                    if (window.__eaPowKicked) return;
+                    window.__eaPowKicked = true;
+                    try { fn(); } catch (error) { /* start() is Filecrypt's */ }
+                    return;
+                }
+                kick.waits = (kick.waits || 0) + 1;
+                if (kick.waits <= 80) setTimeout(kick, 250);
             }
 
-            if (document.readyState === 'loading') {
-                document.addEventListener('DOMContentLoaded', startWhenReady, { once: true });
-            } else {
-                startWhenReady();
-            }
+            kick();
         }
 
         run();
@@ -1742,10 +1749,14 @@
         var header = E('div', { class: 'ea-modal-head' });
         var title = E('strong', { text: 'Filecrypt resolver' });
         var close = E('button', { class: 'ea-btn', type: 'button', text: 'Close' });
-        var status = E('div', { class: 'ea-empty', text: 'Loading Filecrypt…' });
-        var containerFrame = E('iframe', { title: 'Filecrypt verification', src: containerURL, style: 'display:block;width:100%;height:min(70vh,720px);border:0;background:#fff' });
+        var status = E('div', { class: 'ea-empty', text: 'Opening Filecrypt…' });
         var output = E('textarea', { class: 'ea-fc-results', readonly: '', placeholder: 'Resolved /Go/ URLs will appear here' });
-        var state = { rows: [], index: 0, pending: null, linkFrame: null, powState: '' };
+        var state = { rows: [], index: 0, pending: null, powState: '' };
+        var popup = null;
+
+        function child() {
+            return popup && !popup.closed ? popup : null;
+        }
 
         function offerOpenSeparately() {
             if (status.querySelector('a.ea-btn')) {
@@ -1756,6 +1767,9 @@
 
         function closeOverlay() {
             window.removeEventListener('message', onMessage);
+            if (child()) {
+                try { popup.close(); } catch (error) { /* ignore */ }
+            }
             overlay.remove();
             if (overlayOpener && overlayOpener.isConnected) {
                 overlayOpener.focus();
@@ -1775,16 +1789,18 @@
                 setTimeout(processNext, 0);
                 return;
             }
+            var win = child();
+            if (!win) {
+                status.textContent = 'Filecrypt tab was closed. Open it again to resolve links.';
+                offerOpenSeparately();
+                return;
+            }
             var token = String(Date.now()) + '-' + Math.random().toString(36).slice(2);
             var linkURL = new URL(row.linkURL);
             linkURL.searchParams.set('__ea_token', token);
             state.pending = { token: token, row: row };
             status.textContent = 'Resolving ' + (state.index + 1) + '/' + state.rows.length + ': ' + row.filename;
-            if (state.linkFrame) {
-                state.linkFrame.remove();
-            }
-            state.linkFrame = E('iframe', { title: 'Filecrypt link resolver', src: linkURL.href, style: 'position:absolute;left:-9999px;width:2px;height:2px;border:0' });
-            box.append(state.linkFrame);
+            win.location.href = linkURL.href;
         }
 
         function onMessage(event) {
@@ -1796,7 +1812,13 @@
             if (!message.eaFilecrypt) {
                 return;
             }
-            if (payload.type === 'pow-status' && event.source === containerFrame.contentWindow) {
+            if (event.source && (!popup || popup.closed)) {
+                popup = event.source;
+            }
+            if (child() && event.source !== popup) {
+                return;
+            }
+            if (payload.type === 'pow-status') {
                 if (payload.state) {
                     state.powState = payload.state;
                 }
@@ -1810,7 +1832,7 @@
                 }
                 return;
             }
-            if (payload.type === 'container-ready' && event.source === containerFrame.contentWindow) {
+            if (payload.type === 'container-ready') {
                 state.rows = Array.isArray(payload.rows) ? payload.rows : [];
                 if (!state.rows.length) {
                     status.textContent = 'No Filecrypt links found.';
@@ -1820,7 +1842,7 @@
                 processNext();
                 return;
             }
-            if (payload.type !== 'link-result' || !state.pending || event.source !== (state.linkFrame && state.linkFrame.contentWindow) || payload.token !== state.pending.token) {
+            if (payload.type !== 'link-result' || !state.pending || payload.token !== state.pending.token) {
                 return;
             }
             var row = state.pending.row;
@@ -1835,6 +1857,12 @@
             setTimeout(processNext, 500);
         }
 
+        try {
+            popup = window.open(containerURL, 'ea-filecrypt');
+        } catch (error) {
+            popup = null;
+        }
+
         header.append(title, close);
         close.addEventListener('click', closeOverlay);
         overlay.addEventListener('click', function (event) {
@@ -1842,15 +1870,18 @@
                 closeOverlay();
             }
         });
-        box.append(header, status, containerFrame, output);
+        box.append(header, status, output);
         overlay.append(box);
         bindModalKeys(overlay, closeOverlay);
         window.addEventListener('message', onMessage);
         app.append(overlay);
         overlay.focus();
-        containerFrame.addEventListener('load', function () {
-            try { containerFrame.focus(); } catch (error) { /* ignore */ }
-        });
+        if (!popup) {
+            status.textContent = 'Popup blocked. Open Filecrypt in a tab (first-party cookies).';
+            offerOpenSeparately();
+        } else {
+            status.textContent = 'Opened Filecrypt in a tab. Waiting for proof-of-work…';
+        }
         setTimeout(function () {
             if (!state.rows.length && overlay.isConnected) {
                 if (state.powState === 'working' || state.powState === 'done' || state.powState === 'fail') {
