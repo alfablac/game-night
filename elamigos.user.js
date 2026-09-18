@@ -2,7 +2,7 @@
 // @name         ElAmigos Modern UI
 // @bound-url    https://elamigos.site/#/
 // @namespace    elamigos.modern.ui
-// @version      1.5.0
+// @version      1.5.1
 // @description  Responsive dark ElAmigos interface with 12 latest releases, configurable language highlighting, pagination, A–Z archive, compact cards, technical details, details modal, and video.
 // @author       alfablac
 // @downloadURL  https://raw.githubusercontent.com/alfablac/game-night/main/elamigos.user.js
@@ -45,57 +45,29 @@
         return;
     }
 
-    // Filecrypt pow_captcha.js starts SHA-1 from box.click or from start() with no
-    // event (its own autosolve path). Extra clicks restart the worker and open ads.
-    // Capture start via addEventListener and call it once, like autosolve.
-    // Tampermonkey @grant is an isolated world: the hook must also run in the page.
+    // Filecrypt only auto-starts when autosolve is true (it is not). start() needs a
+    // real click on .pow-captcha__box. A document click listener opens ads. Stop the
+    // bubble in the page world so Filecrypt's box listener still runs.
     function installFilecryptPow() {
         function run() {
-            if (window.__eaFilecryptPowStarted) return;
-            window.__eaFilecryptPowStarted = true;
-            try {
-                if (typeof Worker !== 'undefined' && Worker.prototype && !Worker.prototype.__eaSkipPowPause) {
-                    var origPost = Worker.prototype.postMessage;
-                    Worker.prototype.postMessage = function (msg) {
-                        if (msg && msg.cmd === 'pause') return;
-                        return origPost.apply(this, arguments);
-                    };
-                    Worker.prototype.__eaSkipPowPause = true;
-                }
-            } catch (error) { /* keep Filecrypt usable if Worker is frozen */ }
+            if (window.__eaFilecryptPowGuard) return;
+            window.__eaFilecryptPowGuard = true;
 
-            try {
-                if (!EventTarget.prototype.__eaPowHook) {
-                    var origListen = EventTarget.prototype.addEventListener;
-                    EventTarget.prototype.addEventListener = function (type, listener, options) {
-                        if (type === 'click' && typeof listener === 'function') {
-                            try {
-                                if (this && this.classList && this.classList.contains('pow-captcha__box')) {
-                                    window.__eaPowStart = listener;
-                                }
-                            } catch (error) { /* ignore */ }
-                        }
-                        return origListen.call(this, type, listener, options);
-                    };
-                    EventTarget.prototype.__eaPowHook = true;
-                }
-            } catch (error) { /* EventTarget frozen */ }
-
-            function kick() {
-                var root = document.getElementById('pow-captcha');
-                if (root && root.getAttribute('data-state') !== 'idle') return;
-                var fn = window.__eaPowStart;
-                if (typeof fn === 'function') {
-                    if (window.__eaPowKicked) return;
-                    window.__eaPowKicked = true;
-                    try { fn(); } catch (error) { /* start() is Filecrypt's */ }
+            function guardBox() {
+                var box = document.querySelector('#pow-captcha .pow-captcha__box');
+                if (!box) {
+                    guardBox.waits = (guardBox.waits || 0) + 1;
+                    if (guardBox.waits <= 80) setTimeout(guardBox, 250);
                     return;
                 }
-                kick.waits = (kick.waits || 0) + 1;
-                if (kick.waits <= 80) setTimeout(kick, 250);
+                if (box.__eaStopAds) return;
+                box.__eaStopAds = true;
+                box.addEventListener('click', function (event) {
+                    event.stopPropagation();
+                }, false);
             }
 
-            kick();
+            guardBox();
         }
 
         run();
@@ -104,7 +76,7 @@
             script.textContent = '(' + run.toString() + ')();';
             (document.documentElement || document.head).appendChild(script);
             script.remove();
-        } catch (error) { /* page CSP may block; isolated-world run() still applied */ }
+        } catch (error) { /* page CSP may block */ }
     }
 
     var home = /^\/(?:index\.html?)?$/.test(location.pathname);
@@ -228,7 +200,7 @@
             var last = '';
             function emit() {
                 var state = el.getAttribute('data-state') || '';
-                if (state && state !== last && state !== 'idle') {
+                if (state && state !== last) {
                     last = state;
                     post({ type: 'pow-status', state: state });
                 }
@@ -1819,16 +1791,20 @@
                 return;
             }
             if (payload.type === 'pow-status') {
+                var previous = state.powState;
                 if (payload.state) {
                     state.powState = payload.state;
+                }
+                if (payload.state === 'working' && previous === 'done') {
+                    status.textContent = 'Filecrypt rejected the proof and issued a new captcha.';
+                    return;
                 }
                 if (payload.state === 'working') {
                     status.textContent = 'Solving Filecrypt proof-of-work…';
                 } else if (payload.state === 'done') {
-                    status.textContent = 'Proof-of-work finished. Waiting for links…';
+                    status.textContent = 'Proof-of-work finished. Waiting for the download table…';
                 } else if (payload.state === 'fail') {
-                    status.textContent = 'Filecrypt proof-of-work failed. Try opening the container separately.';
-                    offerOpenSeparately();
+                    status.textContent = 'Filecrypt proof-of-work failed.';
                 }
                 return;
             }
@@ -1875,23 +1851,14 @@
         bindModalKeys(overlay, closeOverlay);
         window.addEventListener('message', onMessage);
         app.append(overlay);
-        overlay.focus();
         if (!popup) {
+            overlay.focus();
             status.textContent = 'Popup blocked. Open Filecrypt in a tab (first-party cookies).';
             offerOpenSeparately();
         } else {
-            status.textContent = 'Opened Filecrypt in a tab. Waiting for proof-of-work…';
+            status.textContent = 'Opened Filecrypt in a tab. Click “I am a human” once if asked.';
+            try { popup.focus(); } catch (error) { /* ignore */ }
         }
-        setTimeout(function () {
-            if (!state.rows.length && overlay.isConnected) {
-                if (state.powState === 'working' || state.powState === 'done' || state.powState === 'fail') {
-                    offerOpenSeparately();
-                    return;
-                }
-                status.textContent = 'Still waiting for Filecrypt links. If the proof-of-work is stuck, open the container in a tab (first-party cookies).';
-                offerOpenSeparately();
-            }
-        }, 8000);
     }
 
     function panel(data, entry) {

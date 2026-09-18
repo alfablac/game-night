@@ -466,23 +466,12 @@ async function postPowStatus(popup, state) {
     }, state);
 }
 
-test('Filecrypt overlay keeps Solving at 8s when the PoW is working', async t => {
-    const { page, overlay, popup } = await openFilecryptOverlay(t, { useClock: true });
+test('Filecrypt overlay treats a new captcha after Confirmed as failure', async t => {
+    const { overlay, popup } = await openFilecryptOverlay(t);
+    await postPowStatus(popup, 'done');
+    assert.match(await overlay.locator('.ea-empty').innerText(), /Waiting for the download table/);
     await postPowStatus(popup, 'working');
-    assert.match(await overlay.locator('.ea-empty').innerText(), /Solving Filecrypt proof-of-work/);
-    await page.clock.fastForward(8000);
-    const text = await overlay.locator('.ea-empty').innerText();
-    assert.match(text, /Solving Filecrypt proof-of-work/);
-    assert.doesNotMatch(text, /proof-of-work is stuck/);
-    assert.equal(await overlay.getByRole('link', { name: 'Open Filecrypt separately' }).count(), 1);
-});
-
-test('Filecrypt overlay offers a first-party tab at 8s if the PoW never starts', async t => {
-    const { page, overlay } = await openFilecryptOverlay(t, { useClock: true });
-    await page.clock.fastForward(8000);
-    const text = await overlay.locator('.ea-empty').innerText();
-    assert.match(text, /proof-of-work is stuck/);
-    assert.equal(await overlay.getByRole('link', { name: 'Open Filecrypt separately' }).count(), 1);
+    assert.match(await overlay.locator('.ea-empty').innerText(), /rejected the proof/);
 });
 
 async function openFilecrypt(t, html) {
@@ -510,61 +499,31 @@ async function openFilecrypt(t, html) {
 }
 
 test('Filecrypt PoW helpers inject into the page world', () => {
-    assert.match(source, /the hook must also run in the page/);
+    assert.match(source, /stopPropagation/);
     assert.match(source, /script\.textContent = '\(' \+ run\.toString\(\) \+ '\)\(\);'/);
     assert.match(source, /window\.open\(containerURL, 'ea-filecrypt'\)/);
+    assert.doesNotMatch(source, /__eaPowKicked|__eaSkipPowPause/);
 });
 
-test('Filecrypt page starts PoW via the captured start handler and drops worker pause messages', async t => {
+test('Filecrypt PoW box click reaches the widget but not document ads listeners', async t => {
     const page = await openFilecrypt(t, `
         <div class="pow-captcha" id="pow-captcha" data-state="idle">
             <div class="pow-captcha__box" role="checkbox">I am a human</div>
         </div>
         <script>
-            window.__powStarts = 0;
+            window.__box = 0;
+            window.__doc = 0;
             document.querySelector('.pow-captcha__box').addEventListener('click', function () {
-                window.__powStarts += 1;
+                window.__box += 1;
                 document.getElementById('pow-captcha').setAttribute('data-state', 'working');
             });
+            document.addEventListener('click', function () { window.__doc += 1; });
         </script>
     `);
-    await page.waitForFunction(() => window.__powStarts >= 1);
-    await page.waitForTimeout(400);
-    assert.equal(await page.evaluate(() => window.__powStarts), 1);
-    const echoed = await page.evaluate(async () => {
-        const worker = new Worker(URL.createObjectURL(new Blob(
-            ['self.onmessage = function (e) { self.postMessage(e.data); };'],
-            { type: 'text/javascript' }
-        )));
-        const first = new Promise(resolve => { worker.onmessage = event => resolve(event.data); });
-        worker.postMessage({ cmd: 'pause' });
-        worker.postMessage({ cmd: 'start', challenge: 'abc', difficulty: 1 });
-        const data = await Promise.race([
-            first,
-            new Promise(resolve => setTimeout(() => resolve({ timeout: true }), 1000))
-        ]);
-        worker.terminate();
-        return data;
-    });
-    assert.deepEqual(echoed, { cmd: 'start', challenge: 'abc', difficulty: 1 });
-});
-
-test('Filecrypt PoW does not keep clicking an idle widget', async t => {
-    const page = await openFilecrypt(t, `
-        <div class="pow-captcha" id="pow-captcha" data-state="idle">
-            <div class="pow-captcha__box" role="checkbox">I am a human</div>
-        </div>
-        <script>
-            window.__powClicks = 0;
-            document.querySelector('.pow-captcha__box').addEventListener('click', function () {
-                window.__powClicks += 1;
-            });
-        </script>
-    `);
-    await page.waitForFunction(() => window.__powClicks >= 1);
-    await page.waitForTimeout(2500);
-    assert.equal(await page.evaluate(() => window.__powClicks), 1);
-    assert.equal(await page.evaluate(() => window.__eaPowKicked), true);
+    await page.waitForFunction(() => !!(document.querySelector('.pow-captcha__box') && document.querySelector('.pow-captcha__box').__eaStopAds));
+    await page.locator('.pow-captcha__box').click();
+    assert.equal(await page.evaluate(() => window.__box), 1);
+    assert.equal(await page.evaluate(() => window.__doc), 0);
 });
 
 test('userscript metadata names the author and project URLs', () => {
