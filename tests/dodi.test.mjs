@@ -281,3 +281,46 @@ test('DODI strips remote SVG animations that can turn sanitized links into scrip
   assert.match(await section.textContent(), /Legitimate information remains visible/);
   assert.equal(await page.evaluate(() => window.__svgInjected), undefined);
 });
+
+test('DODI strips remote style blocks and non-web URL attributes from collapsible HTML', async t => {
+  const page = await start(t);
+  await page.locator('[data-tab="exclusive"]').click();
+  await page.getByRole('button', { name: 'View Release' }).first().click();
+  const content = `<div class="sp-wrap"><div class="sp-head">Information</div><div class="sp-body">
+    <style>#dodi-app{display:none!important}</style>
+    <p><a id="data-link" href="data:text/html,xss">Unsafe data</a></p>
+    <p>Visible information</p>
+  </div></div>`;
+  await reply(page, origin + '/game-a/', article('Styled', content));
+  await page.locator('.dodi-modal-body .ea-card').waitFor({ state: 'attached' });
+  const section = page.locator('.dodi-modal-body .fg-extra-body').first();
+  assert.equal(await section.locator('style').count(), 0);
+  assert.equal(await section.locator('a[href^="data:"]').count(), 0);
+  assert.match(await section.textContent(), /Visible information/);
+  assert.notEqual(await page.locator('#dodi-app').evaluate(el => getComputedStyle(el).display), 'none');
+});
+
+test('DODI search timeout is reported instead of an empty result list', async t => {
+  const page = await start(t, pinned, { clock: true });
+  await page.locator('.dodi-search-input').fill('query');
+  await page.locator('.dodi-search-btn').click();
+  await page.clock.fastForward(30_001);
+  const text = await page.locator('.dodi-main').innerText();
+  assert.doesNotMatch(text, /No articles found/);
+  assert.match(text, /timed out|failed/i);
+  assert.equal(await page.getByRole('button', { name: 'Retry', exact: true }).count(), 1);
+});
+
+test('DODI close control has an accessible name', async t => {
+  const page = await start(t);
+  await page.locator('[data-tab="exclusive"]').click();
+  await page.getByRole('button', { name: 'View Release' }).first().click();
+  await page.getByRole('button', { name: /close/i }).click();
+  assert.equal(await page.locator('.dodi-modal').evaluate(el => el.hidden), true);
+});
+
+test('userscript metadata names the project URLs', () => {
+  assert.match(script, /@homepage\s+https:\/\/github\.com\/alfablac\/game-night/);
+  assert.match(script, /@homepageURL\s+https:\/\/github\.com\/alfablac\/game-night/);
+  assert.match(script, /@supportURL\s+https:\/\/github\.com\/alfablac\/game-night\/issues/);
+});

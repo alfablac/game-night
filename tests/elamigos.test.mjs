@@ -295,3 +295,111 @@ test('Filecrypt messages check origin and frame source, and tolerate malformed r
     assert.equal(await page.locator('iframe[title="Filecrypt link resolver"]').count(), 0);
     assert.deepEqual(await page.evaluate(() => window.__errors), []);
 });
+
+test('archive search is a named text field', async t => {
+    const page = await open(t);
+    await respond(page, 'ea_index_refresh=');
+    await page.getByRole('textbox', { name: /search the archive/i }).fill('beta');
+    await page.keyboard.press('Enter');
+    await page.waitForFunction(() => location.hash.includes('q=beta'));
+});
+
+test('clipboard fallback copies from a visible textarea inside the app', async t => {
+    const page = await open(t);
+    await respond(page, 'ea_index_refresh=');
+    await page.getByRole('link', { name: 'Alpha', exact: true }).click();
+    await respond(page, '/data/alpha.html', gameHTML('Alpha'));
+    await page.evaluate(() => {
+        Object.defineProperty(navigator, 'clipboard', {
+            configurable: true,
+            value: { writeText: () => Promise.reject(new Error('denied')) }
+        });
+        const original = Element.prototype.append;
+        Element.prototype.append = function (...nodes) {
+            const result = original.apply(this, nodes);
+            nodes.forEach(node => {
+                if (node && node.tagName === 'TEXTAREA') {
+                    window.__copyFallback = {
+                        parentId: this.id,
+                        display: getComputedStyle(node).display,
+                        value: node.value || node.textContent
+                    };
+                }
+            });
+            return result;
+        };
+    });
+    await page.getByRole('button', { name: 'Copy all' }).click();
+    const fallback = await page.waitForFunction(() => window.__copyFallback);
+    const snapshot = await fallback.jsonValue();
+    assert.equal(snapshot.parentId, 'ea-app');
+    assert.notEqual(snapshot.display, 'none');
+    assert.match(snapshot.value, /https:\/\/example\.test\/directdownload\/game/);
+    assert.equal(await page.getByRole('button', { name: 'Copiado' }).count(), 1);
+});
+
+test('YouTube overlay is a dialog that Escape closes without dismissing game details', async t => {
+    const page = await open(t);
+    await respond(page, 'ea_index_refresh=');
+    await page.getByRole('link', { name: 'Alpha', exact: true }).click();
+    await respond(page, '/data/alpha.html', gameHTML('Alpha')
+        + '<a href="https://www.youtube.com/watch?v=dQw4w9wgGcQ">Trailer</a>'
+        + '<a href="https://youtube.com.evil.test/watch?v=dQw4w9wgGcQ">Phishing</a>');
+    const youtube = page.getByRole('button', { name: '▶ YouTube' });
+    await youtube.focus();
+    await youtube.click();
+    const video = page.locator('.ea-modal[aria-label="Video"]');
+    await video.waitFor();
+    assert.equal(await video.getAttribute('role'), 'dialog');
+    assert.equal(await video.getAttribute('aria-modal'), 'true');
+    assert.equal(await page.locator('.ea-video').getAttribute('title'), 'YouTube video player');
+    assert.match(await page.locator('.ea-video').getAttribute('src'), /youtube-nocookie\.com\/embed\/dQw4w9wgGcQ/);
+    assert.equal(await video.evaluate(element => element.contains(document.activeElement)), true);
+    assert.equal(await page.locator('.ea-modal[aria-label="Game details"]').isHidden(), false);
+    await page.keyboard.press('Escape');
+    assert.equal(await video.count(), 0);
+    assert.equal(await page.locator('.ea-modal[aria-label="Game details"]').isHidden(), false);
+    assert.equal(await youtube.evaluate(element => element === document.activeElement), true);
+});
+
+test('Filecrypt overlay keeps Escape and rejects off-site /Go/ URLs', async t => {
+    const page = await open(t);
+    await respond(page, 'ea_index_refresh=');
+    await page.getByRole('checkbox', { name: 'Show Filecrypt' }).check();
+    await page.getByRole('link', { name: 'Alpha', exact: true }).click();
+    await respond(page, '/data/alpha.html', gameHTML('Alpha') + '<a href="https://filecrypt.cc/Container/a.html">Filecrypt</a>');
+    await page.getByRole('button', { name: 'Resolve Filecrypt' }).click();
+    const overlay = page.locator('.ea-modal[aria-label="Filecrypt resolver"]');
+    await overlay.waitFor();
+    await page.evaluate(() => {
+        const frame = document.querySelector('iframe[title="Filecrypt verification"]');
+        window.dispatchEvent(new MessageEvent('message', {
+            origin: 'https://filecrypt.cc',
+            source: frame.contentWindow,
+            data: { eaFilecrypt: true, payload: { type: 'container-ready', rows: [{ filename: 'Pack', linkURL: 'https://filecrypt.cc/Link/a.html' }] } }
+        }));
+    });
+    await page.locator('iframe[title="Filecrypt link resolver"]').waitFor();
+    await page.evaluate(() => {
+        const frame = document.querySelector('iframe[title="Filecrypt link resolver"]');
+        const token = new URL(frame.src).searchParams.get('__ea_token');
+        window.dispatchEvent(new MessageEvent('message', {
+            origin: 'https://filecrypt.cc',
+            source: frame.contentWindow,
+            data: { eaFilecrypt: true, payload: { type: 'link-result', token, ok: true, goURL: 'https://evil.test/Go/x.html' } }
+        }));
+    });
+    await page.waitForFunction(() => document.querySelector('.ea-fc-results').value.includes('ERROR'));
+    assert.equal(await page.evaluate(() => document.querySelector('.ea-fc-results').value.includes('evil.test')), false);
+    await overlay.focus();
+    await page.keyboard.press('Escape');
+    assert.equal(await overlay.count(), 0);
+    assert.equal(await page.locator('.ea-modal[aria-label="Game details"]').isHidden(), false);
+});
+
+test('userscript metadata names the author and project URLs', () => {
+    assert.match(source, /@author\s+alfablac/);
+    assert.match(source, /@homepage\s+https:\/\/github\.com\/alfablac\/game-night/);
+    assert.match(source, /@homepageURL\s+https:\/\/github\.com\/alfablac\/game-night/);
+    assert.match(source, /@supportURL\s+https:\/\/github\.com\/alfablac\/game-night\/issues/);
+});

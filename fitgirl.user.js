@@ -1,10 +1,13 @@
 // ==UserScript==
 // @name         FitGirl Modern Dark UI
 // @author       alfablac
-// @version      1.6.3
+// @version      1.6.4
 // @namespace    fitgirl.modern.violentmonkey
 // @downloadURL  https://raw.githubusercontent.com/alfablac/game-night/main/fitgirl.user.js
 // @updateURL    https://raw.githubusercontent.com/alfablac/game-night/main/fitgirl.user.js
+// @homepage     https://github.com/alfablac/game-night
+// @homepageURL  https://github.com/alfablac/game-night
+// @supportURL   https://github.com/alfablac/game-night/issues
 // @match        https://fitgirl-repacks.site/*
 // @match        https://www.fitgirl-repacks.site/*
 // @match        https://web.tolstoycomments.com/widget/*
@@ -19,7 +22,8 @@
 
   // Tolstoy is rendered in a cross-origin iframe, so its document needs its
   // own scoped stylesheet. Keep the main FitGirl UI untouched in this frame.
-  if (window.top !== window.self && /(^|\.)tolstoycomments\.com$/i.test(location.hostname)) {
+  if (/(^|\.)tolstoycomments\.com$/i.test(location.hostname)) {
+    if (window.top !== window.self) {
     GM_addStyle(`
       :root { color-scheme: dark !important; }
 
@@ -125,6 +129,7 @@
         color: #91a6b5 !important;
       }
     `);
+    }
     return;
   }
 
@@ -174,6 +179,15 @@ body,
   background: #171f28 !important;
   color: #dce6ed !important;
   border-color: #2b3a48 !important;
+}
+
+.entry-content [style*="color: black" i],
+.entry-content [style*="color:black" i],
+.entry-content [style*="color:#000" i],
+.entry-content [style*="color: #000" i],
+.entry-content [style*="color:#333" i],
+.entry-content [style*="color: #333" i] {
+  color: #dce6ed !important;
 }
 
 body {
@@ -2697,12 +2711,16 @@ details.fg-extra > summary:hover {
     document.querySelectorAll('.paging-navigation').forEach(pagination => {
       const currentNode = pagination.querySelector('.page-numbers.current');
       const lastLink = [...pagination.querySelectorAll('a.page-numbers:not(.next):not(.prev)')]
-        .sort((a, b) => Number(b.textContent) - Number(a.textContent))[0];
-      if (!currentNode || !lastLink || pagination.dataset.fgExpanded) return;
+        .sort((a, b) => Number(b.textContent) - Number(a.textContent))[0]
+        || pagination.querySelector('a.page-numbers.prev, a.page-numbers.next');
+      if (!currentNode || pagination.dataset.fgExpanded) return;
 
       const current = Number(T(currentNode));
-      const last = Number(T(lastLink));
+      const last = Math.max(Number(T(lastLink)) || 0, current);
       if (!Number.isInteger(current) || !Number.isInteger(last) || last < 2) return;
+
+      const hrefSource = lastLink || pagination.querySelector('a.page-numbers');
+      if (!hrefSource) return;
 
       const pages = last <= 10
         ? Array.from({ length: last }, (_, i) => i + 1)
@@ -2713,12 +2731,12 @@ details.fg-extra > summary:hover {
             : [1, current - 2, current - 1, current, current + 1, current + 2, last];
       const unique = [...new Set(pages.filter(n => n > 0 && n <= last))];
       const next = pagination.querySelector('.next.page-numbers');
-      if (!next) return;
+      const mount = next || pagination.querySelector('.pagination') || pagination;
 
       pagination.querySelectorAll('.page-numbers:not(.next):not(.prev)').forEach(node => node.remove());
 
       const href = page => {
-        const url = new URL(lastLink.href);
+        const url = new URL(hrefSource.href);
         url.pathname = url.pathname.replace(/page\/\d+\/?$/, page === 1 ? '' : `page/${page}/`);
         return url.href;
       };
@@ -2726,13 +2744,13 @@ details.fg-extra > summary:hover {
         if (i && page > unique[i - 1] + 1) {
           const dots = mk('span', 'page-numbers dots');
           dots.textContent = '…';
-          next.before(dots);
+          next ? next.before(dots) : mount.append(dots);
         }
         const node = page === current ? mk('span', 'page-numbers current') : mk('a', 'page-numbers');
         node.textContent = String(page);
         if (node.tagName === 'A') node.href = href(page);
         node.setAttribute(page === current ? 'aria-current' : 'data-page', page === current ? 'page' : String(page));
-        next.before(node);
+        next ? next.before(node) : mount.append(node);
       });
       pagination.dataset.fgExpanded = '1';
     });
@@ -2898,6 +2916,10 @@ details.fg-extra > summary:hover {
 
         list.addEventListener('pointermove', event => {
           if (!active) return;
+          if (event.pointerType === 'mouse' && !(event.buttons & 1)) {
+            finishDrag();
+            return;
+          }
 
           const deltaX = event.clientX - startX;
           const deltaY = event.clientY - startY;

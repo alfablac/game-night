@@ -1,11 +1,14 @@
 // ==UserScript==
 // @name         DODI Repacks Modern UI & Shortlink Bypass
 // @namespace    dodi.modern.ui
-// @version      1.5.4
+// @version      1.5.5
 // @description  Modern responsive dark UI for DODI Repacks using Inter typography, exact ElAmigos card layout (poster + description + compact collapsible sections for Information, Repack Features, Backwards Compatibility & Download Links), enlarged game details modal for Free Activation, Exclusive & Trending tabs, persistent pinned posts across pagination and search, auto-loading search 5-by-5, IndexedDB persistent link cache, batch mirror resolution, and direct background HTTP shortlink bypass.
 // @author       alfablac
 // @downloadURL  https://raw.githubusercontent.com/alfablac/game-night/main/dodi.user.js
 // @updateURL    https://raw.githubusercontent.com/alfablac/game-night/main/dodi.user.js
+// @homepage     https://github.com/alfablac/game-night
+// @homepageURL  https://github.com/alfablac/game-night
+// @supportURL   https://github.com/alfablac/game-night/issues
 // @match        https://dodi-repacks.site/*
 // @match        https://www.dodi-repacks.site/*
 // @match        *://go.zovo.ink/*
@@ -212,7 +215,7 @@
         }
 
         function notifyResolved(targetUrl) {
-            if (resolved || !targetUrl || targetUrl.includes('javascript:') || targetUrl.includes('/undefined')) return;
+            if (resolved || !isDownloadUrl(targetUrl) || String(targetUrl).includes('/undefined')) return;
             resolved = true;
             console.log('[DODI Bypass] Destination link resolved:', targetUrl);
 
@@ -363,6 +366,7 @@
         var markup = SVG_ICONS[name] || '';
         var span = document.createElement('span');
         span.className = 'dodi-svg-icon';
+        span.setAttribute('aria-hidden', 'true');
         span.innerHTML = markup;
         return span;
     }
@@ -1873,7 +1877,7 @@
         temp.innerHTML = html;
 
         // Foreign-content animations can change a URL after attribute validation.
-        qa('script, iframe, frame, object, embed, base, meta, link, svg, math', temp.content).forEach(function (el) {
+        qa('script, iframe, frame, object, embed, base, meta, link, svg, math, style, noscript', temp.content).forEach(function (el) {
             el.remove();
         });
 
@@ -1882,8 +1886,19 @@
                 // URL parsers drop control characters and spaces, so strip them before the scheme check.
                 // eslint-disable-next-line no-control-regex
                 var value = attr.value.replace(/[ - ]/g, '');
-                if (/^on/i.test(attr.name) || attr.name === 'srcdoc' || /^javascript:/i.test(value)) {
+                var name = attr.name.toLowerCase();
+                if (/^on/i.test(name) || name === 'srcdoc' || /^javascript:/i.test(value)) {
                     el.removeAttribute(attr.name);
+                    return;
+                }
+                if (value && /^(?:href|src|action|formaction|poster|ping|data)$/.test(name)) {
+                    try {
+                        if (!/^(https?:|magnet:)$/.test(new URL(value, location.href).protocol)) {
+                            el.removeAttribute(attr.name);
+                        }
+                    } catch (e) {
+                        el.removeAttribute(attr.name);
+                    }
                 }
             });
 
@@ -2407,7 +2422,7 @@
         }).then(function (resGo) {
             var dataGo = resGo.responseText || '';
             var json = JSON.parse(dataGo);
-            if (json && json.url) {
+            if (json && isDownloadUrl(json.url)) {
                 console.log('[DODI Resolver] Destination link resolved:', json.url);
                 if (typeof GM_setValue === 'function') {
                     GM_setValue('dodi_zovo_' + cleanKey, json.url);
@@ -2440,6 +2455,7 @@
         searchAllResults: [],
         searchLoadedCount: 0,
         searchSeq: 0,
+        searchError: '',
         isSearching: false,
         articleCache: {}
     };
@@ -2447,7 +2463,19 @@
     var appRoot = null;
     var mainViewContainer = null;
 
+    function isAllowedArticleUrl(url) {
+        try {
+            var parsed = new URL(url, location.href);
+            return parsed.protocol === 'https:' && /^(?:www\.)?(?:dodi-repacks\.site|game-repack\.site)$/i.test(parsed.hostname);
+        } catch (e) {
+            return false;
+        }
+    }
+
     function requestPage(url) {
+        if (!isAllowedArticleUrl(url)) {
+            return Promise.reject(new Error('Blocked host'));
+        }
         return new Promise(function (resolve, reject) {
             var request;
             var timer = setTimeout(function () {
@@ -2754,6 +2782,11 @@
                         btnAllText.textContent = 'Resolving ' + colName + ' (' + (idx + 1) + '/' + colItems.length + ')...';
 
                         resolveZovoSilently(item.mirror.url, item.mirror.fallbackUrls, function (directUrl) {
+                            if (!isDownloadUrl(directUrl)) {
+                                idx++;
+                                step();
+                                return;
+                            }
                             item.linkBtn.href = directUrl;
                             item.linkBtn.className = 'ea-btn ea-btn-direct';
                             item.linkBtn.innerHTML = '';
@@ -2949,6 +2982,12 @@
                                 resolveBtnLabel.textContent = 'Resolving...';
 
                                 resolveZovoSilently(mirror.url, mirror.fallbackUrls, function (directUrl) {
+                                    if (!isDownloadUrl(directUrl)) {
+                                        resolveBtn.disabled = false;
+                                        resolveBtnLabel.textContent = 'Retry Resolve';
+                                        showToast('Silent resolve failed: blocked destination URL');
+                                        return;
+                                    }
                                     linkBtn.href = directUrl;
                                     linkBtn.className = 'ea-btn ea-btn-direct';
                                     linkBtn.innerHTML = '';
@@ -3073,7 +3112,8 @@
         var closeBtn = E('button', {
             class: 'dodi-modal-close',
             type: 'button',
-            title: 'Close modal (Esc)'
+            title: 'Close modal (Esc)',
+            'aria-label': 'Close'
         }, [
             svg('close')
         ]);
@@ -3476,7 +3516,8 @@
                     href: item.url,
                     target: '_blank',
                     rel: 'noopener',
-                    title: 'Open original web page in new tab'
+                    title: 'Open original web page in new tab',
+                    'aria-label': 'Open original web page'
                 }, [
                     svg('open_in_new')
                 ]);
@@ -3505,6 +3546,14 @@
             mainViewContainer.append(E('div', { class: 'dodi-loading-state' }, [
                 E('div', { class: 'dodi-spinner' }),
                 E('span', { text: 'Searching and loading first 5 articles for "' + state.searchQuery + '"...' })
+            ]));
+            return;
+        }
+
+        if (state.searchError) {
+            mainViewContainer.append(E('div', { class: 'dodi-loading-state' }, [
+                E('span', { text: 'Search failed: ' + state.searchError }),
+                E('button', { class: 'ea-btn', type: 'button', text: 'Retry', onclick: function () { performSearch(state.searchQuery); } })
             ]));
             return;
         }
@@ -3580,6 +3629,7 @@
         state.activeTab = 'search';
         state.searchAllResults = [];
         state.searchLoadedCount = 0;
+        state.searchError = '';
         var seq = ++state.searchSeq;
 
         ensureSearchTabInNav();
@@ -3626,6 +3676,7 @@
         }).catch(function (err) {
             if (seq !== state.searchSeq) return;
             state.isSearching = false;
+            state.searchError = err.message || 'Search failed';
             showToast('Search failed: ' + err.message);
             if (state.activeTab === 'search') renderCurrentTab();
         });

@@ -2,10 +2,14 @@
 // @name         ElAmigos Modern UI
 // @bound-url    https://elamigos.site/#/
 // @namespace    elamigos.modern.ui
-// @version      1.4.6
+// @version      1.4.7
 // @description  Responsive dark ElAmigos interface with 12 latest releases, configurable language highlighting, pagination, A–Z archive, compact cards, technical details, details modal, and video.
+// @author       alfablac
 // @downloadURL  https://raw.githubusercontent.com/alfablac/game-night/main/elamigos.user.js
 // @updateURL    https://raw.githubusercontent.com/alfablac/game-night/main/elamigos.user.js
+// @homepage     https://github.com/alfablac/game-night
+// @homepageURL  https://github.com/alfablac/game-night
+// @supportURL   https://github.com/alfablac/game-night/issues
 // @match        https://elamigos.site/*
 // @match        https://www.elamigos.site/*
 // @match        https://filecrypt.cc/*
@@ -65,14 +69,25 @@
             });
         }
 
+        function isFilecryptGoURL(value) {
+            try {
+                var parsed = new URL(value, location.href);
+                return /^https?:$/.test(parsed.protocol) && /^(?:www\.)?filecrypt\.cc$/i.test(parsed.hostname) && /^\/Go\//i.test(parsed.pathname);
+            } catch (error) {
+                return false;
+            }
+        }
+
         function findGoUrl() {
             var node = document.querySelector('a[href*="/Go/"],form[action*="/Go/"],[data-url*="/Go/"]');
             var value = node && (node.getAttribute('href') || node.getAttribute('action') || node.getAttribute('data-url'));
             if (value) {
-                return absolute(value);
+                value = absolute(value);
+                return isFilecryptGoURL(value) ? value : '';
             }
             var match = document.documentElement.innerHTML.match(/(?:["'])(https?:\/\/[^"']+\/Go\/[A-Za-z0-9._~-]+\.html|\/Go\/[A-Za-z0-9._~-]+\.html)(?:["'])/i);
-            return match ? absolute(match[1]) : '';
+            value = match ? absolute(match[1]) : '';
+            return isFilecryptGoURL(value) ? value : '';
         }
 
         async function linkPage() {
@@ -1146,9 +1161,7 @@
 
         var youtube = qa('a[href]', doc).map(function (anchor) {
             return abs(anchor.getAttribute('href'), url);
-        }).find(function (href) {
-            return /youtube\.com|youtu\.be/i.test(href);
-        });
+        }).find(isYouTubeURL);
 
         return {
             url: url,
@@ -1341,6 +1354,48 @@
         }
     }
 
+    function isFilecryptGoURL(value) {
+        try {
+            return isFilecryptURL(value) && /^\/Go\//i.test(new URL(value).pathname);
+        } catch (error) {
+            return false;
+        }
+    }
+
+    function isYouTubeURL(value) {
+        try {
+            var parsed = new URL(value);
+            return /^https?:$/.test(parsed.protocol) && /^(?:www\.|m\.)?(?:youtube\.com|youtu\.be)$/i.test(parsed.hostname);
+        } catch (error) {
+            return false;
+        }
+    }
+
+    function bindModalKeys(dialog, onClose) {
+        dialog.addEventListener('keydown', function (event) {
+            if (event.key === 'Escape') {
+                event.preventDefault();
+                event.stopPropagation();
+                onClose();
+            } else if (event.key === 'Tab') {
+                var focusable = qa('a[href], button, input, textarea, summary, [tabindex]', dialog).filter(function (element) {
+                    return !element.disabled && element.tabIndex >= 0 && element.getClientRects().length;
+                });
+                var first = focusable[0];
+                var last = focusable[focusable.length - 1];
+                if (!first) {
+                    event.preventDefault();
+                    dialog.focus();
+                    return;
+                }
+                if ((event.shiftKey && document.activeElement === first) || (!event.shiftKey && document.activeElement === last)) {
+                    event.preventDefault();
+                    (event.shiftKey ? last : first).focus();
+                }
+            }
+        });
+    }
+
     function klHttp(options) {
         return new Promise(function (resolve, reject) {
             GM_xmlhttpRequest({
@@ -1412,14 +1467,16 @@
     }
 
     function fallbackCopy(text, done) {
-        var textarea = E('textarea', { text: text });
-        textarea.style.position = 'fixed';
-        textarea.style.opacity = '0';
-        document.body.append(textarea);
+        var textarea = E('textarea', { text: text, 'aria-hidden': 'true' });
+        textarea.setAttribute('tabindex', '-1');
+        textarea.style.cssText = 'position:fixed;opacity:0;width:1px;height:1px;left:0;top:0;';
+        (app && app.isConnected ? app : document.body).append(textarea);
+        textarea.focus();
         textarea.select();
         try {
-            document.execCommand('copy');
-            done();
+            if (document.execCommand('copy')) {
+                done();
+            }
         } finally {
             textarea.remove();
         }
@@ -1560,7 +1617,8 @@
     }
 
     function openFilecryptOverlay(containerURL) {
-        var overlay = E('div', { class: 'ea-modal' });
+        var overlayOpener = document.activeElement;
+        var overlay = E('div', { class: 'ea-modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Filecrypt resolver', tabindex: '-1' });
         var box = E('div', { class: 'ea-box' });
         var header = E('div', { class: 'ea-modal-head' });
         var title = E('strong', { text: 'Filecrypt resolver' });
@@ -1573,6 +1631,9 @@
         function closeOverlay() {
             window.removeEventListener('message', onMessage);
             overlay.remove();
+            if (overlayOpener && overlayOpener.isConnected) {
+                overlayOpener.focus();
+            }
         }
 
         function processNext() {
@@ -1623,10 +1684,10 @@
                 return;
             }
             var row = state.pending.row;
-            if (payload.ok) {
+            if (payload.ok && isFilecryptGoURL(payload.goURL)) {
                 output.value += row.filename + '\n' + payload.goURL + '\n\n';
             } else {
-                output.value += row.filename + '\nERROR: ' + payload.error + '\n\n';
+                output.value += row.filename + '\nERROR: ' + (payload.ok ? 'invalid link' : payload.error) + '\n\n';
             }
             output.scrollTop = output.scrollHeight;
             state.pending = null;
@@ -1643,8 +1704,10 @@
         });
         box.append(header, status, containerFrame, output);
         overlay.append(box);
+        bindModalKeys(overlay, closeOverlay);
         window.addEventListener('message', onMessage);
         app.append(overlay);
+        close.focus();
         setTimeout(function () {
             if (!state.rows.length && overlay.isConnected) {
                 status.textContent = 'Complete Filecrypt PoW in the embedded page. If it is blocked, open the container directly.';
@@ -2003,26 +2066,37 @@
     }
 
     function video(url) {
+        if (!isYouTubeURL(url)) {
+            return;
+        }
         var id;
         try {
             var videoUrl = new URL(url);
             var path = videoUrl.pathname;
-            id = videoUrl.searchParams.get('v') || (path.match(/\/(?:embed|shorts)\/([^/?]+)/) || [])[1] || (videoUrl.hostname === 'youtu.be' && path.slice(1)) || '';
+            id = videoUrl.searchParams.get('v') || (path.match(/\/(?:embed|shorts)\/([^/?]+)/) || [])[1] || (/^(?:www\.)?youtu\.be$/i.test(videoUrl.hostname) && path.slice(1).split('/')[0]) || '';
         } catch (error) {
             return;
         }
-        if (!id) {
+        if (!/^[\w-]{6,32}$/.test(id)) {
             return;
         }
 
-        var videoModal = E('div', { class: 'ea-modal' });
+        var opener = document.activeElement;
+        var videoModal = E('div', { class: 'ea-modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Video', tabindex: '-1' });
+        function closeVideo() {
+            videoModal.remove();
+            if (opener && opener.isConnected) {
+                opener.focus();
+            }
+        }
         videoModal.append(E('div', { class: 'ea-box ea-video-box' }, [
             E('div', { class: 'ea-modal-head' }, [
                 E('strong', { text: 'Video' }),
-                E('button', { class: 'ea-btn', text: 'Close', onclick: function () { videoModal.remove(); } })
+                E('button', { class: 'ea-btn', type: 'button', text: 'Close', onclick: closeVideo })
             ]),
             E('iframe', {
                 class: 'ea-video',
+                title: 'YouTube video player',
                 src: 'https://www.youtube-nocookie.com/embed/' + id + '?autoplay=1&rel=0',
                 allow: 'autoplay; fullscreen; picture-in-picture',
                 allowfullscreen: '',
@@ -2030,7 +2104,14 @@
             }),
             E('div', { class: 'ea-video-actions' }, [E('a', { href: url, target: '_blank', rel: 'noopener', text: 'Open on YouTube ↗' })])
         ]));
+        videoModal.addEventListener('click', function (event) {
+            if (event.target === videoModal) {
+                closeVideo();
+            }
+        });
+        bindModalKeys(videoModal, closeVideo);
         app.append(videoModal);
+        q('.ea-modal-head button', videoModal).focus();
     }
 
     function route() {
@@ -2066,6 +2147,7 @@
         var search = E('input', {
             class: 'ea-input',
             placeholder: 'Search the archive…',
+            'aria-label': 'Search the archive',
             onkeydown: function (event) {
                 if (event.key === 'Enter') {
                     location.hash = '#/archive?q=' + encodeURIComponent(event.target.value);

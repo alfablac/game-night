@@ -272,3 +272,85 @@ test('Tolstoy iframe receives only its scoped comment theme', async t => {
   assert.equal(await widget.locator('.fg-tabs').count(), 0);
   assert.equal(await widget.locator('article').getAttribute('data-fg-ui'), null);
 });
+
+test('inline black hoster notes become readable without wiping green titles', async t => {
+  const page = await openPage(t, `<article><div class="entry-content">
+    <span id="black-note" style="color: black">(REALLY Fucking Fast)</span>
+    <span id="green-title" style="color: #339966">Green title</span>
+  </div></article>`);
+  assert.notEqual(await page.locator('#black-note').evaluate(element => getComputedStyle(element).color), 'rgb(0, 0, 0)');
+  assert.equal(await page.locator('#green-title').evaluate(element => getComputedStyle(element).color), 'rgb(51, 153, 102)');
+});
+
+test('carousel drag stops after the mouse is released outside the strip', async t => {
+  const posters = Array.from({ length: 8 }, () => `<a href="#"><img src="${image}" width="180" height="60" alt=""></a>`).join('');
+  const page = await openPage(t, `<div class="wplp_widget_13066"><div class="wplp_listposts" style="width:220px;overflow:auto;white-space:nowrap">${posters}</div></div>${article}`);
+  const result = await page.locator('.wplp_listposts').evaluate(element => {
+    const box = element.getBoundingClientRect();
+    const x = box.left + 20;
+    const y = box.top + 10;
+    const fire = (type, clientX, buttons) => element.dispatchEvent(new PointerEvent(type, {
+      bubbles: true, pointerId: 1, pointerType: 'mouse', isPrimary: true, button: 0, buttons, clientX, clientY: y
+    }));
+    fire('pointerdown', x, 1);
+    fire('pointermove', x + 3, 0);
+    const afterRelease = { scroll: element.scrollLeft, dragging: element.classList.contains('fg-dragging') };
+    fire('pointermove', x + 90, 0);
+    return {
+      ready: element.dataset.fgTouchReady,
+      afterRelease,
+      hover: { scroll: element.scrollLeft, dragging: element.classList.contains('fg-dragging') }
+    };
+  });
+  assert.equal(result.ready, '1');
+  assert.equal(result.afterRelease.dragging, false);
+  assert.equal(result.hover.scroll, result.afterRelease.scroll);
+  assert.equal(result.hover.dragging, false);
+});
+
+test('a top-level Tolstoy widget does not mount the FitGirl UI', async t => {
+  const context = await browser.newContext();
+  t.after(() => context.close());
+  const page = await context.newPage();
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await context.route('**/*', route => {
+    if (route.request().url().startsWith('https://web.tolstoycomments.com/')) {
+      return route.fulfill({
+        contentType: 'text/html',
+        body: '<html><head></head><body><article><h3>Screenshots</h3><p>Comment</p></article></body></html>'
+      });
+    }
+    return route.abort();
+  });
+  await page.addInitScript(`
+    window.GM_addStyle = css => {
+      const style = document.createElement('style');
+      style.textContent = css;
+      (document.head || document.documentElement).append(style);
+    };
+    window.GM_setClipboard = () => {};
+  ` + source);
+  await page.goto('https://web.tolstoycomments.com/widget/test');
+  assert.deepEqual(errors, []);
+  assert.equal(await page.locator('.fg-tabs, article[data-fg-ui]').count(), 0);
+});
+
+test('last pagination page still expands numbered links', async t => {
+  const page = await openPage(t, article + `<nav class="navigation paging-navigation"><div class="pagination">
+    <a class="prev page-numbers" href="${origin}/page/24/">Previous</a>
+    <a class="page-numbers" href="${origin}/page/1/">1</a>
+    <span class="page-numbers dots">…</span>
+    <span class="page-numbers current">25</span>
+  </div></nav>`);
+  const navigation = page.locator('.paging-navigation').first();
+  assert.equal(await navigation.getAttribute('data-fg-expanded'), '1');
+  assert.equal(await navigation.locator('[data-page="24"]').count(), 1);
+  assert.equal(await navigation.locator('[aria-current="page"]').textContent(), '25');
+});
+
+test('userscript metadata names the project URLs', () => {
+  assert.match(source, /@homepage\s+https:\/\/github\.com\/alfablac\/game-night/);
+  assert.match(source, /@homepageURL\s+https:\/\/github\.com\/alfablac\/game-night/);
+  assert.match(source, /@supportURL\s+https:\/\/github\.com\/alfablac\/game-night\/issues/);
+});
