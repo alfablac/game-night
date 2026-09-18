@@ -46,6 +46,8 @@
     // Worker wrap and the click must also run in the page world or they miss the widget.
     function installFilecryptPow() {
         function run() {
+            if (window.__eaFilecryptPowStarted) return;
+            window.__eaFilecryptPowStarted = true;
             try {
                 if (typeof Worker !== 'undefined' && Worker.prototype && !Worker.prototype.__eaSkipPowPause) {
                     var origPost = Worker.prototype.postMessage;
@@ -57,29 +59,30 @@
                 }
             } catch (error) { /* keep Filecrypt usable if Worker is frozen */ }
 
-            function clickPow() {
-                var root = document.getElementById('pow-captcha');
-                if (!root) return false;
-                if (root.getAttribute('data-state') !== 'idle') return true;
-                var box = root.querySelector('.pow-captcha__box');
-                if (!box) return false;
-                try {
-                    box.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, pointerType: 'mouse' }));
-                } catch (error) {
-                    box.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, cancelable: true }));
-                }
-                box.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-                box.click();
-                return root.getAttribute('data-state') !== 'idle';
-            }
-
             function startWhenReady() {
-                if (clickPow()) return;
-                var tries = 0;
-                var timer = setInterval(function () {
-                    tries += 1;
-                    if (clickPow() || tries > 40) clearInterval(timer);
-                }, 250);
+                var clicks = 0;
+                var waits = 0;
+                function tick() {
+                    var root = document.getElementById('pow-captcha');
+                    if (root && root.getAttribute('data-state') !== 'idle') return;
+                    if (clicks >= 2 || waits > 40) return;
+                    var box = root && root.querySelector('.pow-captcha__box');
+                    if (!box) {
+                        waits += 1;
+                        setTimeout(tick, 250);
+                        return;
+                    }
+                    // Extra clicks restart Filecrypt's worker and slow the SHA-1 search.
+                    clicks += 1;
+                    try {
+                        box.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, pointerType: 'mouse' }));
+                    } catch (error) {
+                        box.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, cancelable: true }));
+                    }
+                    box.click();
+                    if (clicks < 2) setTimeout(tick, 2000);
+                }
+                tick();
             }
 
             if (document.readyState === 'loading') {

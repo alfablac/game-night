@@ -538,6 +538,8 @@ test('Filecrypt page clicks the PoW checkbox and drops worker pause messages', a
         </script>
     `);
     await page.waitForFunction(() => window.__powClicks >= 1 && window.__powPointers >= 1);
+    await page.waitForTimeout(400);
+    assert.ok(await page.evaluate(() => window.__powClicks <= 2 && window.__powPointers <= 2));
     const echoed = await page.evaluate(async () => {
         const worker = new Worker(URL.createObjectURL(new Blob(
             ['self.onmessage = function (e) { self.postMessage(e.data); };'],
@@ -554,6 +556,23 @@ test('Filecrypt page clicks the PoW checkbox and drops worker pause messages', a
         return data;
     });
     assert.deepEqual(echoed, { cmd: 'start', challenge: 'abc', difficulty: 1 });
+});
+
+test('Filecrypt PoW does not keep clicking an idle widget', async t => {
+    const page = await openFilecrypt(t, `
+        <div class="pow-captcha" id="pow-captcha" data-state="idle">
+            <div class="pow-captcha__box" role="checkbox">I am a human</div>
+        </div>
+        <script>
+            window.__powClicks = 0;
+            document.querySelector('.pow-captcha__box').addEventListener('click', function () {
+                window.__powClicks += 1;
+            });
+        </script>
+    `);
+    await page.waitForFunction(() => window.__powClicks >= 1);
+    await page.waitForTimeout(800);
+    assert.equal(await page.evaluate(() => window.__powClicks), 1);
 });
 
 test('userscript metadata names the author and project URLs', () => {
