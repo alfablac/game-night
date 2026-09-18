@@ -191,6 +191,22 @@ test('DODI treats "zovo" only as a hostname, not a substring anywhere in a mirro
   assert.equal(await page.evaluate(() => window.__requests.some(request => request.url.includes('192.168.0.1'))), false);
 });
 
+test('DODI upgrades http://zovo2.top shortlinks to https before silent resolve', async t => {
+  // DODI posts http://zovo2.top/... ; that origin is a LiteSpeed bot-check with no CSRF form.
+  // https://zovo2.top/... serves the same CakePHP continue-form as go.zovo.ink (which 301s http→https).
+  const content = '<h3>Download Links</h3><ul><li><a href="http://zovo2.top/abc">Zovo Mirror</a></li></ul>';
+  const page = await start(t, pinned + article('Zovo2Http', content));
+  await page.locator('[data-tab="exclusive"]').click();
+  await page.getByRole('button', { name: 'View Release' }).first().click();
+  await reply(page, origin + '/game-a/', article('Zovo2Http', content));
+  await page.locator('.dodi-modal-body .ea-card').waitFor();
+  await page.locator('.fg-downloads > summary').click();
+  assert.equal(await page.locator('.ea-btn-zovo').getAttribute('href'), 'https://zovo2.top/abc');
+  await page.getByRole('button', { name: 'Silent Resolve' }).click();
+  await page.waitForFunction(() => window.__requests.some(request => request.url === 'https://zovo2.top/abc'));
+  assert.equal(await page.evaluate(() => window.__requests.some(request => request.url.startsWith('http://zovo2.top'))), false);
+});
+
 test('DODI keeps a single roving tab and a resolvable tabpanel label for an empty search results page', async t => {
   const page = await start(t, '<p>No results.</p>', { path: '/?s=zzzz' });
   await page.waitForFunction(() => document.querySelectorAll('[role="tab"][tabindex="0"]').length === 1);

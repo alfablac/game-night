@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         DODI Repacks Modern UI & Shortlink Bypass
 // @namespace    dodi.modern.ui
-// @version      1.5.5
+// @version      1.5.6
 // @description  Modern responsive dark UI for DODI Repacks using Inter typography, exact ElAmigos card layout (poster + description + compact collapsible sections for Information, Repack Features, Backwards Compatibility & Download Links), enlarged game details modal for Free Activation, Exclusive & Trending tabs, persistent pinned posts across pagination and search, auto-loading search 5-by-5, IndexedDB persistent link cache, batch mirror resolution, and direct background HTTP shortlink bypass.
 // @author       alfablac
 // @downloadURL  https://raw.githubusercontent.com/alfablac/game-night/main/dodi.user.js
@@ -2098,6 +2098,19 @@
         }
     }
 
+    // zovo2.top's HTTP origin is a LiteSpeed bot-check without the CSRF form;
+    // go.zovo.ink already 301s to https, so upgrade before the resolver GET.
+    function upgradeZovoUrl(url) {
+        try {
+            var parsed = new URL(url, location.href);
+            if (!isZovoUrl(parsed.href) || parsed.protocol !== 'http:') return url;
+            parsed.protocol = 'https:';
+            return parsed.href;
+        } catch (e) {
+            return url;
+        }
+    }
+
     // Parse Download Links from Content element
     function parseDownloadLinksFromContent(contentEl) {
         var groups = [];
@@ -2146,6 +2159,7 @@
                     liLinks.forEach(function (a, mIdx) {
                         var url = a.getAttribute('href') || '';
                         if (!isDownloadUrl(url) || /dodi-repacks\.site\/(?:category|tag|author)/i.test(url)) return;
+                        url = upgradeZovoUrl(url);
                         mirrors.push({
                             url: url,
                             label: 'Mirror ' + (mIdx + 1),
@@ -2180,6 +2194,7 @@
             links.forEach(function (a, mIdx) {
                 var url = a.getAttribute('href') || '';
                 if (!isDownloadUrl(url) || /dodi-repacks\.site\/(?:category|tag|author)/i.test(url)) return;
+                url = upgradeZovoUrl(url);
                 mirrors.push({
                     url: url,
                     label: mirrors.length === 0 ? 'Download' : 'Mirror ' + (mIdx + 1),
@@ -2311,6 +2326,8 @@
             fallbackUrls = [];
         }
         fallbackUrls = Array.isArray(fallbackUrls) ? fallbackUrls : (fallbackUrls ? [fallbackUrls] : []);
+        zovoUrl = upgradeZovoUrl(zovoUrl);
+        fallbackUrls = fallbackUrls.map(upgradeZovoUrl);
 
         console.log('[DODI Resolver] Resolving silently via background HTTP:', zovoUrl);
         showToast('[Bypass] Resolving Zovo shortlink in background...');
@@ -2382,6 +2399,7 @@
     }
 
     function runHttpResolution(zovoUrl, cleanKey, onDone, onError) {
+        zovoUrl = upgradeZovoUrl(zovoUrl);
         if (!isZovoUrl(zovoUrl)) {
             if (onError) onError(new Error('Blocked host'));
             return;
