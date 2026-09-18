@@ -474,6 +474,13 @@ test('Filecrypt overlay treats a new captcha after Confirmed as failure', async 
     assert.match(await overlay.locator('.ea-empty').innerText(), /rejected the proof/);
 });
 
+test('Filecrypt overlay treats idle after Confirmed as a rejected proof', async t => {
+    const { overlay, popup } = await openFilecryptOverlay(t);
+    await postPowStatus(popup, 'done');
+    await postPowStatus(popup, 'idle');
+    assert.match(await overlay.locator('.ea-empty').innerText(), /rejected the proof/);
+});
+
 async function openFilecrypt(t, html) {
     const context = await browser.newContext({ serviceWorkers: 'block' });
     t.after(() => context.close());

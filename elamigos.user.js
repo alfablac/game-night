@@ -1795,7 +1795,7 @@
                 if (payload.state) {
                     state.powState = payload.state;
                 }
-                if (payload.state === 'working' && previous === 'done') {
+                if ((payload.state === 'working' || payload.state === 'idle') && previous === 'done') {
                     status.textContent = 'Filecrypt rejected the proof and issued a new captcha.';
                     return;
                 }
