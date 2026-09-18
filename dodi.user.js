@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         DODI Repacks Modern UI & Shortlink Bypass
 // @namespace    dodi.modern.ui
-// @version      1.5.3
+// @version      1.5.4
 // @description  Modern responsive dark UI for DODI Repacks using Inter typography, exact ElAmigos card layout (poster + description + compact collapsible sections for Information, Repack Features, Backwards Compatibility & Download Links), enlarged game details modal for Free Activation, Exclusive & Trending tabs, persistent pinned posts across pagination and search, auto-loading search 5-by-5, IndexedDB persistent link cache, batch mirror resolution, and direct background HTTP shortlink bypass.
 // @author       alfablac
 // @downloadURL  https://raw.githubusercontent.com/alfablac/game-night/main/dodi.user.js
@@ -17,7 +17,6 @@
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_setClipboard
-// @grant        GM_registerMenuCommand
 // @grant        unsafeWindow
 // @connect      dodi-repacks.site
 // @connect      www.dodi-repacks.site
@@ -1719,7 +1718,8 @@
                         var a = q('a', li);
                         if (!a) return;
                         var rawText = txt(li);
-                        var title = txt(a) || rawText;
+                        var aText = txt(a);
+                        var title = (aText && !/^Available Now$/i.test(aText)) ? aText : rawText;
                         var cleanTitle = title.replace(/\s*[\u2013-]\s*Available Now/i, '').trim();
                         result.freeActivation.push({
                             title: cleanTitle,
@@ -1855,10 +1855,23 @@
     // Sanitize HTML inside collapsible buttons: convert text to white, maintaining ONLY red warnings
     function sanitizeCollapsibleHtml(html) {
         if (!html) return '';
-        var temp = document.createElement('div');
+        var temp = document.createElement('template'); // inert: no resource loading, no script execution
         temp.innerHTML = html;
 
-        qa('*', temp).forEach(function (el) {
+        qa('script, iframe, frame, object, embed, base, meta, link', temp.content).forEach(function (el) {
+            el.remove();
+        });
+
+        qa('*', temp.content).forEach(function (el) {
+            Array.prototype.slice.call(el.attributes).forEach(function (attr) {
+                // URL parsers drop control characters and spaces, so strip them before the scheme check.
+                // eslint-disable-next-line no-control-regex
+                var value = attr.value.replace(/[ - ]/g, '');
+                if (/^on/i.test(attr.name) || attr.name === 'srcdoc' || /^javascript:/i.test(value)) {
+                    el.removeAttribute(attr.name);
+                }
+            });
+
             // Normalize oversized headings
             if (/^H[1-6]$/i.test(el.tagName)) {
                 el.style.fontSize = '12.5px';
@@ -1967,6 +1980,7 @@
         if (dateM) info.releaseDate = cleanSpecVal(dateM[1]);
 
         var sizeM = html.match(/Repack\s*Size\s*:\s*(?:from\s*)?([0-9.]+\s*(?:GB|MB))/i) ||
+                    fullText.match(/Repack\s*Size\s*:\s*(?:from\s*)?([0-9.]+\s*(?:GB|MB))/i) ||
                     fullText.match(/\((?:From\s*)?([0-9.]+\s*(?:GB|MB))\)/i);
         if (sizeM) info.repackSize = sizeM[1];
 
@@ -2018,11 +2032,11 @@
         if (dlIndex === -1) dlIndex = 0;
 
         var sectionHtml = html.substring(dlIndex);
-        var tempDiv = document.createElement('div');
+        var tempDiv = document.createElement('template'); // inert: no resource loading, no script execution
         tempDiv.innerHTML = sectionHtml;
 
         var currentCategory = 'Direct & Torrent Downloads';
-        var elements = qa('p, ol, ul, h2, h3, h4', tempDiv);
+        var elements = qa('p, ol, ul, h2, h3, h4', tempDiv.content);
 
         elements.forEach(function (el) {
             var text = txt(el);
@@ -2032,11 +2046,11 @@
                 return;
             }
 
-            if (/elamigos Updates/i.test(text)) {
+            if (/elamigos Updates?/i.test(text)) {
                 currentCategory = 'ElAmigos Updates';
                 return;
             }
-            if (/RUNE Updates/i.test(text)) {
+            if (/RUNE Updates?/i.test(text)) {
                 currentCategory = 'RUNE Updates';
                 return;
             }
@@ -2399,6 +2413,7 @@
         searchQuery: '',
         searchAllResults: [],
         searchLoadedCount: 0,
+        searchSeq: 0,
         isSearching: false,
         articleCache: {}
     };
@@ -2419,7 +2434,9 @@
                             reject(new Error('HTTP status ' + res.status));
                         }
                     },
-                    onerror: reject
+                    onerror: function (res) {
+                        reject(new Error('Network error' + (res && res.statusText ? ': ' + res.statusText : '')));
+                    }
                 });
             } else {
                 fetch(url).then(function (res) {
@@ -2929,6 +2946,7 @@
     var modalTitle = null;
     var modalBody = null;
     var modalDirectLink = null;
+    var modalSeq = 0;
 
     function ensureModal() {
         if (modalOverlay) return;
@@ -3006,6 +3024,8 @@
         modalOverlay.hidden = false;
         document.body.style.overflow = 'hidden';
 
+        var seq = ++modalSeq;
+
         modalTitle.textContent = fallbackTitle || 'Game Details';
         modalDirectLink.href = url || '#';
         modalBody.innerHTML = '';
@@ -3026,6 +3046,7 @@
         modalBody.append(loadingEl);
 
         requestPage(url).then(function (html) {
+            if (seq !== modalSeq) return;
             var art = parseArticleFromHtml(html, url);
             if (!art.title && fallbackTitle) {
                 art.title = fallbackTitle;
@@ -3036,6 +3057,7 @@
             modalBody.innerHTML = '';
             modalBody.append(renderGameCard(art, true));
         }).catch(function (err) {
+            if (seq !== modalSeq) return;
             modalBody.innerHTML = '';
             var errorEl = E('div', { class: 'dodi-loading-state' }, [
                 E('span', { style: { color: '#ff6b6b', fontWeight: 'bold' }, text: 'Failed to load release details: ' + (err.message || 'Network error') }),
@@ -3402,7 +3424,8 @@
         var grid = E('div', { class: 'dodi-cards-grid', id: 'dodi-search-grid' });
 
         // Render loaded articles
-        for (var i = 0; i < state.searchLoadedCount; i++) {
+        var loadedCount = Math.min(state.searchLoadedCount, state.searchAllResults.length);
+        for (var i = 0; i < loadedCount; i++) {
             var artData = state.articleCache[state.searchAllResults[i].url];
             if (artData) {
                 grid.append(renderGameCard(artData));
@@ -3448,6 +3471,7 @@
         state.activeTab = 'search';
         state.searchAllResults = [];
         state.searchLoadedCount = 0;
+        var seq = ++state.searchSeq;
 
         ensureSearchTabInNav();
         renderCurrentTab();
@@ -3458,6 +3482,7 @@
         } catch (e) {}
 
         requestPage(searchUrl).then(function (html) {
+            if (seq !== state.searchSeq) return;
             var parser = new DOMParser();
             var doc = parser.parseFromString(html, 'text/html');
 
@@ -3487,20 +3512,22 @@
 
             // Automatically load the FIRST 5 results
             var initialCount = Math.min(5, results.length);
-            loadSearchBatch(0, initialCount);
+            loadSearchBatch(0, initialCount, seq);
 
         }).catch(function (err) {
+            if (seq !== state.searchSeq) return;
             state.isSearching = false;
             showToast('Search failed: ' + err.message);
-            renderCurrentTab();
+            if (state.activeTab === 'search') renderCurrentTab();
         });
     }
 
-    function loadSearchBatch(startIndex, count) {
+    function loadSearchBatch(startIndex, count, seq) {
+        if (seq === undefined) seq = state.searchSeq;
         var batch = state.searchAllResults.slice(startIndex, startIndex + count);
         if (batch.length === 0) {
             state.isSearching = false;
-            renderCurrentTab();
+            if (state.activeTab === 'search') renderCurrentTab();
             return;
         }
 
@@ -3515,7 +3542,7 @@
                 return parsed;
             }).catch(function () {
                 // Fallback basic item
-                return {
+                var fb = {
                     title: item.title,
                     cleanTitle: item.title,
                     url: item.url,
@@ -3524,14 +3551,17 @@
                     sections: { spoilers: [], repackFeaturesHtml: '', backwardsHtml: '' },
                     downloads: []
                 };
+                state.articleCache[item.url] = fb;
+                return fb;
             });
         });
 
         Promise.all(promises).then(function () {
+            if (seq !== state.searchSeq) return;
             state.searchLoadedCount = startIndex + batch.length;
             state.isSearching = false;
             updateSearchTabBadge();
-            renderCurrentTab();
+            if (state.activeTab === 'search') renderCurrentTab();
         });
     }
 
@@ -3600,6 +3630,7 @@
                 state.searchQuery = searchParam;
                 state.activeTab = 'search';
                 state.searchAllResults = parsedArticles.map(function (a) { return { title: a.title, url: a.url }; });
+                state.isSearching = true;
                 var initCount = Math.min(5, state.searchAllResults.length);
                 loadSearchBatch(0, initCount);
             }
