@@ -145,6 +145,35 @@
     /* =========================================================================
        2. ZOVO SHORTLINK AUTO-BYPASS ENGINE (Active on Zovo domains)
        ========================================================================= */
+    // Host-anchored Zovo check: a substring test like /zovo/i.test(url) would also match
+    // e.g. http://192.168.0.1/apply.cgi?x=zovo, sending that host a privileged background request.
+    function isZovoUrl(url) {
+        try {
+            var parsed = new URL(url, location.href);
+            return /^https?:$/.test(parsed.protocol) && /(?:^|\.)(?:zovo\.ink|zovo2\.top)$/i.test(parsed.hostname);
+        } catch (e) {
+            return false;
+        }
+    }
+
+    // zovo2.top's HTTP origin is a LiteSpeed bot-check without the CSRF form;
+    // go.zovo.ink already 301s to https, so upgrade before the resolver GET.
+    function upgradeZovoUrl(url) {
+        try {
+            var parsed = new URL(url, location.href);
+            if (!isZovoUrl(parsed.href) || parsed.protocol !== 'http:') return url;
+            parsed.protocol = 'https:';
+            return parsed.href;
+        } catch (e) {
+            return url;
+        }
+    }
+
+    if (location.protocol === 'http:' && isZovoUrl(location.href)) {
+        location.replace(upgradeZovoUrl(location.href));
+        return;
+    }
+
     var isZovoDomain = /(?:^|\.)(?:zovo\.(?:ink|top)|zovo2\.top|go\.zovo\.ink)$/i.test(location.hostname) ||
                        /zovo/i.test(location.hostname);
 
@@ -2085,30 +2114,6 @@
         }
 
         return info;
-    }
-
-    // Host-anchored Zovo check: a substring test like /zovo/i.test(url) would also match
-    // e.g. http://192.168.0.1/apply.cgi?x=zovo, sending that host a privileged background request.
-    function isZovoUrl(url) {
-        try {
-            var parsed = new URL(url, location.href);
-            return /^https?:$/.test(parsed.protocol) && /(?:^|\.)(?:zovo\.ink|zovo2\.top)$/i.test(parsed.hostname);
-        } catch (e) {
-            return false;
-        }
-    }
-
-    // zovo2.top's HTTP origin is a LiteSpeed bot-check without the CSRF form;
-    // go.zovo.ink already 301s to https, so upgrade before the resolver GET.
-    function upgradeZovoUrl(url) {
-        try {
-            var parsed = new URL(url, location.href);
-            if (!isZovoUrl(parsed.href) || parsed.protocol !== 'http:') return url;
-            parsed.protocol = 'https:';
-            return parsed.href;
-        } catch (e) {
-            return url;
-        }
     }
 
     // Parse Download Links from Content element

@@ -191,20 +191,50 @@ test('DODI treats "zovo" only as a hostname, not a substring anywhere in a mirro
   assert.equal(await page.evaluate(() => window.__requests.some(request => request.url.includes('192.168.0.1'))), false);
 });
 
-test('DODI upgrades http://zovo2.top shortlinks to https before silent resolve', async t => {
-  // DODI posts http://zovo2.top/... ; that origin is a LiteSpeed bot-check with no CSRF form.
-  // https://zovo2.top/... serves the same CakePHP continue-form as go.zovo.ink (which 301s http→https).
-  const content = '<h3>Download Links</h3><ul><li><a href="http://zovo2.top/abc">Zovo Mirror</a></li></ul>';
-  const page = await start(t, pinned + article('Zovo2Http', content));
-  await page.locator('[data-tab="exclusive"]').click();
-  await page.getByRole('button', { name: 'View Release' }).first().click();
-  await reply(page, origin + '/game-a/', article('Zovo2Http', content));
-  await page.locator('.dodi-modal-body .ea-card').waitFor();
-  await page.locator('.fg-downloads > summary').click();
-  assert.equal(await page.locator('.ea-btn-zovo').getAttribute('href'), 'https://zovo2.top/abc');
-  await page.getByRole('button', { name: 'Silent Resolve' }).click();
-  await page.waitForFunction(() => window.__requests.some(request => request.url === 'https://zovo2.top/abc'));
-  assert.equal(await page.evaluate(() => window.__requests.some(request => request.url.startsWith('http://zovo2.top'))), false);
+for (const host of ['zovo2.top', 'go.zovo.ink']) {
+  test(`DODI upgrades http://${host} shortlinks to https before silent resolve`, async t => {
+    // DODI posts these as http://. zovo2.top's HTTP origin is a LiteSpeed bot-check with no CSRF
+    // form; go.zovo.ink 301s to https (a 301 body also has no token if the request is not followed).
+    const content = `<h3>Download Links</h3><ul><li><a href="http://${host}/abc">Zovo Mirror</a></li></ul>`;
+    const page = await start(t, pinned + article('ZovoHttp', content));
+    await page.locator('[data-tab="exclusive"]').click();
+    await page.getByRole('button', { name: 'View Release' }).first().click();
+    await reply(page, origin + '/game-a/', article('ZovoHttp', content));
+    await page.locator('.dodi-modal-body .ea-card').waitFor();
+    await page.locator('.fg-downloads > summary').click();
+    assert.equal(await page.locator('.ea-btn-zovo').getAttribute('href'), `https://${host}/abc`);
+    await page.getByRole('button', { name: 'Silent Resolve' }).click();
+    await page.waitForFunction(url => window.__requests.some(request => request.url === url), `https://${host}/abc`);
+    assert.equal(await page.evaluate(h => window.__requests.some(request => request.url.startsWith('http://' + h)), host), false);
+  });
+}
+
+test('DODI sends an http://zovo2.top page load to https so the in-page bypass sees the CSRF form', async t => {
+  const context = await browser.newContext({ serviceWorkers: 'block' });
+  const errors = [];
+  t.after(async () => {
+    await context.close();
+    assert.deepEqual(errors, [], 'userscript must not emit uncaught browser errors');
+  });
+  await context.route('**/*', route => {
+    const url = route.request().url();
+    if (route.request().isNavigationRequest() && /^https?:\/\/(?:www\.)?zovo2\.top\//i.test(url)) {
+      const secure = url.startsWith('https:');
+      return route.fulfill({
+        contentType: 'text/html',
+        body: secure
+          ? '<!doctype html><title>Zovo2.top</title><form id="form-continue"></form>'
+          : '<!doctype html><title>Bot Verification</title><form id="lsrecaptcha-form"></form>'
+      });
+    }
+    return route.abort();
+  });
+  const page = await context.newPage();
+  page.setDefaultTimeout(5_000);
+  page.on('pageerror', error => errors.push(error.message));
+  await page.goto('http://zovo2.top/abc');
+  await page.addScriptTag({ content: script });
+  await page.waitForURL('https://zovo2.top/abc');
 });
 
 test('DODI keeps a single roving tab and a resolvable tabpanel label for an empty search results page', async t => {
