@@ -32,13 +32,16 @@ function installMocks({ savedCache, blockStorage, useFetch }) {
     if (!useFetch) window.GM_xmlhttpRequest = options => { window.__requests.push(options); };
 }
 
-async function open(t, { url = 'https://elamigos.site/#/all', html = indexHTML, savedCache, blockStorage, useFetch, fetchStatus = 200, fetchBody = indexHTML, fetchHang = false, viewport } = {}) {
+async function open(t, { url = 'https://elamigos.site/#/all', html = indexHTML, savedCache, blockStorage, useFetch, fetchStatus = 200, fetchBody = indexHTML, fetchHang = false, useClock = false, viewport } = {}) {
     const context = await browser.newContext({ serviceWorkers: 'block', ...(viewport ? { viewport } : {}) });
     t.after(() => context.close());
     await context.route('**/*', async route => {
         const request = route.request();
         if (request.isNavigationRequest() && request.url().startsWith('https://elamigos.site/')) {
             return route.fulfill({ contentType: 'text/html', body: '<!doctype html><html><head></head><body>' + html + '</body></html>' });
+        }
+        if (request.isNavigationRequest() && /^https:\/\/(?:www\.)?filecrypt\.cc\//i.test(request.url())) {
+            return route.fulfill({ contentType: 'text/html', body: '<!doctype html><title>Filecrypt</title><body></body></html>' });
         }
         if (useFetch && request.url().includes('ea_index_refresh=')) {
             if (fetchHang) return;
@@ -54,7 +57,7 @@ async function open(t, { url = 'https://elamigos.site/#/all', html = indexHTML, 
         + ' if (document.documentElement) { observer.disconnect(); run(); } }); observer.observe(document, { childList: true }); } })();' });
     const page = await context.newPage();
     page.setDefaultTimeout(2500);
-    if (fetchHang) await page.clock.install();
+    if (fetchHang || useClock) await page.clock.install();
     await page.goto(url);
     await page.locator('#ea-app').waitFor();
     return page;
@@ -295,23 +298,23 @@ test('Filecrypt messages check origin and frame source, and tolerate malformed r
     await page.getByRole('checkbox', { name: 'Show Filecrypt' }).check();
     await page.getByRole('link', { name: 'Alpha', exact: true }).click();
     await respond(page, '/data/alpha.html', gameHTML('Alpha') + '<a href="https://filecrypt.cc/Container/a.html">Filecrypt</a>');
+    const popupPromise = page.waitForEvent('popup');
     await page.getByRole('button', { name: 'Resolve Filecrypt' }).click();
+    const popup = await popupPromise;
     await page.evaluate(() => {
-        const frame = document.querySelector('iframe[title="Filecrypt verification"]');
         const data = { eaFilecrypt: true, payload: { type: 'container-ready', rows: [{ filename: 'Untrusted', linkURL: 'https://filecrypt.cc/Link/a.html' }] } };
-        window.dispatchEvent(new MessageEvent('message', { origin: 'https://evil.test', source: frame.contentWindow, data }));
+        window.dispatchEvent(new MessageEvent('message', { origin: 'https://evil.test', source: window, data }));
         window.dispatchEvent(new MessageEvent('message', { origin: 'https://filecrypt.cc', source: window, data }));
     });
-    assert.equal(await page.locator('iframe[title="Filecrypt link resolver"]').count(), 0);
-    await page.evaluate(() => {
-        const frame = document.querySelector('iframe[title="Filecrypt verification"]');
-        window.dispatchEvent(new MessageEvent('message', {
-            origin: 'https://filecrypt.cc', source: frame.contentWindow,
-            data: { eaFilecrypt: true, payload: { type: 'container-ready', rows: [null, { filename: 'Invalid', linkURL: 'javascript:alert(1)' }] } }
-        }));
+    assert.equal(await page.locator('.ea-fc-results').inputValue(), '');
+    await popup.evaluate(() => {
+        window.opener.postMessage({
+            eaFilecrypt: true,
+            payload: { type: 'container-ready', rows: [null, { filename: 'Invalid', linkURL: 'javascript:alert(1)' }] }
+        }, '*');
     });
     await page.waitForFunction(() => document.querySelector('.ea-fc-results').value.includes('Invalid\nERROR: invalid link'));
-    assert.equal(await page.locator('iframe[title="Filecrypt link resolver"]').count(), 0);
+    assert.equal(await page.locator('iframe[title="Filecrypt verification"]').count(), 0);
     assert.deepEqual(await page.evaluate(() => window.__errors), []);
 });
 
@@ -391,26 +394,20 @@ test('Filecrypt overlay keeps Escape and rejects off-site /Go/ URLs', async t =>
     await page.getByRole('checkbox', { name: 'Show Filecrypt' }).check();
     await page.getByRole('link', { name: 'Alpha', exact: true }).click();
     await respond(page, '/data/alpha.html', gameHTML('Alpha') + '<a href="https://filecrypt.cc/Container/a.html">Filecrypt</a>');
+    const popupPromise = page.waitForEvent('popup');
     await page.getByRole('button', { name: 'Resolve Filecrypt' }).click();
     const overlay = page.locator('.ea-modal[aria-label="Filecrypt resolver"]');
     await overlay.waitFor();
-    await page.evaluate(() => {
-        const frame = document.querySelector('iframe[title="Filecrypt verification"]');
-        window.dispatchEvent(new MessageEvent('message', {
-            origin: 'https://filecrypt.cc',
-            source: frame.contentWindow,
-            data: { eaFilecrypt: true, payload: { type: 'container-ready', rows: [{ filename: 'Pack', linkURL: 'https://filecrypt.cc/Link/a.html' }] } }
-        }));
+    const popup = await popupPromise;
+    assert.equal(await page.locator('iframe[title="Filecrypt verification"]').count(), 0);
+    await popup.evaluate(() => {
+        window.opener.postMessage({ eaFilecrypt: true, payload: { type: 'container-ready', rows: [{ filename: 'Pack', linkURL: 'https://filecrypt.cc/Link/a.html' }] } }, '*');
     });
-    await page.locator('iframe[title="Filecrypt link resolver"]').waitFor();
-    await page.evaluate(() => {
-        const frame = document.querySelector('iframe[title="Filecrypt link resolver"]');
-        const token = new URL(frame.src).searchParams.get('__ea_token');
-        window.dispatchEvent(new MessageEvent('message', {
-            origin: 'https://filecrypt.cc',
-            source: frame.contentWindow,
-            data: { eaFilecrypt: true, payload: { type: 'link-result', token, ok: true, goURL: 'https://evil.test/Go/x.html' } }
-        }));
+    await popup.waitForURL(/__ea_token=/, { timeout: 5_000 });
+    await page.waitForFunction(() => /Resolving 1\/1/.test(document.querySelector('.ea-empty')?.innerText || ''));
+    await popup.evaluate(() => {
+        const token = new URL(location.href).searchParams.get('__ea_token');
+        window.opener.postMessage({ eaFilecrypt: true, payload: { type: 'link-result', token, ok: true, goURL: 'https://evil.test/Go/x.html' } }, '*');
     });
     await page.waitForFunction(() => document.querySelector('.ea-fc-results').value.includes('ERROR'));
     assert.equal(await page.evaluate(() => document.querySelector('.ea-fc-results').value.includes('evil.test')), false);
@@ -426,27 +423,62 @@ test('Filecrypt Link page skips an off-site /Go/ candidate before the real one',
     await page.getByRole('checkbox', { name: 'Show Filecrypt' }).check();
     await page.getByRole('link', { name: 'Alpha', exact: true }).click();
     await respond(page, '/data/alpha.html', gameHTML('Alpha') + '<a href="https://filecrypt.cc/Container/a.html">Filecrypt</a>');
-    await page.getByRole('button', { name: 'Resolve Filecrypt' }).click();
-    await page.locator('.ea-modal[aria-label="Filecrypt resolver"]').waitFor();
-    await page.route('https://filecrypt.cc/Link/real.html**', route => route.fulfill({
+    await page.context().route('https://filecrypt.cc/Link/real.html**', route => route.fulfill({
         contentType: 'text/html',
         body: '<html><body>'
             + '<a href="https://ads.example/Go/x.html">Ad</a>'
             + '<a href="/Go/real.html">Real</a>'
             + '</body></html>'
     }));
-    await page.evaluate(() => {
-        const frame = document.querySelector('iframe[title="Filecrypt verification"]');
-        window.dispatchEvent(new MessageEvent('message', {
-            origin: 'https://filecrypt.cc',
-            source: frame.contentWindow,
-            data: { eaFilecrypt: true, payload: { type: 'container-ready', rows: [{ filename: 'Pack', linkURL: 'https://filecrypt.cc/Link/real.html' }] } }
-        }));
+    const popupPromise = page.waitForEvent('popup');
+    await page.getByRole('button', { name: 'Resolve Filecrypt' }).click();
+    await page.locator('.ea-modal[aria-label="Filecrypt resolver"]').waitFor();
+    const popup = await popupPromise;
+    await popup.evaluate(() => {
+        window.opener.postMessage({
+            eaFilecrypt: true,
+            payload: { type: 'container-ready', rows: [{ filename: 'Pack', linkURL: 'https://filecrypt.cc/Link/real.html' }] }
+        }, '*');
     });
     await page.waitForFunction(() => document.querySelector('.ea-fc-results').value.includes('Pack\n'));
     const output = await page.locator('.ea-fc-results').inputValue();
     assert.match(output, /https:\/\/filecrypt\.cc\/Go\/real\.html/);
     assert.doesNotMatch(output, /ads\.example/);
+});
+
+async function openFilecryptOverlay(t, { useClock = false } = {}) {
+    const page = await open(t, { useClock });
+    await respond(page, 'ea_index_refresh=');
+    await page.getByRole('checkbox', { name: 'Show Filecrypt' }).check();
+    await page.getByRole('link', { name: 'Alpha', exact: true }).click();
+    await respond(page, '/data/alpha.html', gameHTML('Alpha') + '<a href="https://filecrypt.cc/Container/a.html">Filecrypt</a>');
+    const popupPromise = page.waitForEvent('popup');
+    await page.getByRole('button', { name: 'Resolve Filecrypt' }).click();
+    const overlay = page.locator('.ea-modal[aria-label="Filecrypt resolver"]');
+    await overlay.waitFor();
+    const popup = await popupPromise;
+    return { page, overlay, popup };
+}
+
+async function postPowStatus(popup, state) {
+    await popup.evaluate(state => {
+        window.opener.postMessage({ eaFilecrypt: true, payload: { type: 'pow-status', state } }, '*');
+    }, state);
+}
+
+test('Filecrypt overlay treats a new captcha after Confirmed as failure', async t => {
+    const { overlay, popup } = await openFilecryptOverlay(t);
+    await postPowStatus(popup, 'done');
+    assert.match(await overlay.locator('.ea-empty').innerText(), /Waiting for the download table/);
+    await postPowStatus(popup, 'working');
+    assert.match(await overlay.locator('.ea-empty').innerText(), /rejected the proof/);
+});
+
+test('Filecrypt overlay treats idle after Confirmed as a rejected proof', async t => {
+    const { overlay, popup } = await openFilecryptOverlay(t);
+    await postPowStatus(popup, 'done');
+    await postPowStatus(popup, 'idle');
+    assert.match(await overlay.locator('.ea-empty').innerText(), /rejected the proof/);
 });
 
 async function openFilecrypt(t, html) {
@@ -473,40 +505,33 @@ async function openFilecrypt(t, html) {
     return page;
 }
 
-test('Filecrypt page clicks the PoW checkbox and drops worker pause messages', async t => {
+test('Filecrypt PoW helpers inject into the page world', () => {
+    assert.match(source, /stopPropagation/);
+    assert.match(source, /script\.textContent = '\(' \+ run\.toString\(\) \+ '\)\(\);'/);
+    assert.match(source, /window\.open\(containerURL, 'ea-filecrypt'\)/);
+    assert.match(source, /__eaSkipPowPause/);
+    assert.doesNotMatch(source, /__eaPowKicked/);
+});
+
+test('Filecrypt PoW box click reaches the widget but not document ads listeners', async t => {
     const page = await openFilecrypt(t, `
         <div class="pow-captcha" id="pow-captcha" data-state="idle">
             <div class="pow-captcha__box" role="checkbox">I am a human</div>
         </div>
         <script>
-            window.__powClicks = 0;
-            window.__powPointers = 0;
-            document.querySelector('.pow-captcha__box').addEventListener('pointerdown', function () {
-                window.__powPointers += 1;
-            });
+            window.__box = 0;
+            window.__doc = 0;
             document.querySelector('.pow-captcha__box').addEventListener('click', function () {
-                window.__powClicks += 1;
+                window.__box += 1;
                 document.getElementById('pow-captcha').setAttribute('data-state', 'working');
             });
+            document.addEventListener('click', function () { window.__doc += 1; });
         </script>
     `);
-    await page.waitForFunction(() => window.__powClicks >= 1 && window.__powPointers >= 1);
-    const echoed = await page.evaluate(async () => {
-        const worker = new Worker(URL.createObjectURL(new Blob(
-            ['self.onmessage = function (e) { self.postMessage(e.data); };'],
-            { type: 'text/javascript' }
-        )));
-        const first = new Promise(resolve => { worker.onmessage = event => resolve(event.data); });
-        worker.postMessage({ cmd: 'pause' });
-        worker.postMessage({ cmd: 'start', challenge: 'abc', difficulty: 1 });
-        const data = await Promise.race([
-            first,
-            new Promise(resolve => setTimeout(() => resolve({ timeout: true }), 1000))
-        ]);
-        worker.terminate();
-        return data;
-    });
-    assert.deepEqual(echoed, { cmd: 'start', challenge: 'abc', difficulty: 1 });
+    await page.waitForFunction(() => !!(document.querySelector('.pow-captcha__box') && document.querySelector('.pow-captcha__box').__eaStopAds));
+    await page.locator('.pow-captcha__box').click();
+    assert.equal(await page.evaluate(() => window.__box), 1);
+    assert.equal(await page.evaluate(() => window.__doc), 0);
 });
 
 test('userscript metadata names the author and project URLs', () => {
