@@ -1,0 +1,19 @@
+{
+  "name": "game-night",
+  "private": true,
+  "description": "Userscripts for FitGirl, ElAmigos and DODI Repacks (dev tooling only; the .user.js files ship as-is)",
+  "type": "module",
+  "packageManager": "pnpm@10.33.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "lint": "eslint ."
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.10.0",
+    "eslint-plugin-userscripts": "^0.5.6",
+    "globals": "^17.12.0"
+  }
+}
