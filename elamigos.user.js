@@ -307,6 +307,7 @@
             padding: 24px 16px 70px;
         }
         .ea-h1 {
+            position: relative;
             margin: 0 0 4px;
             color: #fff !important;
             font-size: 22px;
@@ -389,11 +390,11 @@
             font-size: 16px;
             line-height: 1.2;
         }
-        .ea-info-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
-        .ea-btn.ea-info-badge { position: relative; border-color: #527b8b; background: #243744; color: #c9edf6; }
+        .ea-info-actions { position: relative; display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+        .ea-btn.ea-info-badge { position: static; border-color: #527b8b; background: #243744; color: #c9edf6; }
         .ea-btn.ea-info-badge:hover,
         .ea-btn.ea-info-badge:focus-visible { border-color: var(--ea-accent); background: #2b5361; color: #fff; }
-        .ea-info-badge .ea-tip { top: calc(100% + 6px); left: 0; }
+        .ea-info-badge .ea-tip { top: calc(100% + 6px); left: 0; max-width: 100%; }
         .ea-info-badge:hover .ea-tip,
         .ea-info-badge:focus-visible .ea-tip { visibility: visible; opacity: 1; }
         .ea-btn.ea-youtube-btn { border-color: #70404a; background: #38252b; color: #f0c8c8; }
@@ -689,7 +690,8 @@
             font-weight: 700;
         }
         .ea-info-description { display: block; }
-        .ea-page-info { margin-left: .45rem; vertical-align: middle; }
+        .ea-page-info { position: static; margin-left: .45rem; vertical-align: middle; }
+        .ea-page-info .ea-tip { top: 100%; max-width: 100%; }
         .ea-modal { position: fixed; z-index: 20; inset: 0; display: grid; place-items: center; padding: 20px; background: #080b10cc; backdrop-filter: blur(3px); }
         .ea-modal[hidden] { display: none; }
         .ea-box { width: min(1080px, 100%); max-height: 90vh; overflow: auto; border: 1px solid var(--ea-border-strong); border-radius: 12px; background: var(--ea-surface); box-shadow: 0 12px 32px #0008; }
@@ -728,7 +730,7 @@
             .ea-cover,
             .ea-ph { max-width: 180px; }
             .ea-sections { grid-template-columns: 1fr; }
-            .ea-archive-layout { grid-template-columns: 1fr; }
+            .ea-archive-layout { grid-template-columns: minmax(0, 1fr); }
             .ea-letters { position: static; display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); }
             .ea-letter { justify-content: center; padding: 7px 3px; }
             .ea-letter small { display: none; }

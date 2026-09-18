@@ -32,8 +32,8 @@ function installMocks({ savedCache, blockStorage, useFetch }) {
     if (!useFetch) window.GM_xmlhttpRequest = options => { window.__requests.push(options); };
 }
 
-async function open(t, { url = 'https://elamigos.site/#/all', html = indexHTML, savedCache, blockStorage, useFetch, fetchStatus = 200, fetchBody = indexHTML, fetchHang = false } = {}) {
-    const context = await browser.newContext({ serviceWorkers: 'block' });
+async function open(t, { url = 'https://elamigos.site/#/all', html = indexHTML, savedCache, blockStorage, useFetch, fetchStatus = 200, fetchBody = indexHTML, fetchHang = false, viewport } = {}) {
+    const context = await browser.newContext({ serviceWorkers: 'block', ...(viewport ? { viewport } : {}) });
     t.after(() => context.close());
     await context.route('**/*', async route => {
         const request = route.request();
@@ -67,6 +67,46 @@ async function respond(page, match, body = indexHTML, status = 200) {
         request.onload({ status, responseText: body });
         request.settled = true;
     }, { match, body, status });
+}
+
+for (const width of [320, 390, 1366]) {
+    test(`ElAmigos home, tooltips, archive and pagination fit ${width}px`, async t => {
+        const title = 'Suikoden I and II HD Remaster Gate Rune and Dunan Unification Wars';
+        const longIndex = '<h2>18.09.2026</h2>' + Array.from({ length: 30 }, (_, i) =>
+            '<h3>' + title + ' ' + i + ' + ElAmigos <a href="data/game-' + i + '.html">download</a></h3>').join('');
+        const page = await open(t, { url: 'https://elamigos.site/#/', viewport: { width, height: 844 } });
+        await respond(page, 'ea_index_refresh=', longIndex);
+        await page.evaluate(body => window.__requests.filter(request => request.url.includes('/data/')).forEach(request =>
+            request.onload({ status: 200, responseText: body })), '<h2>' + title + ', 1GB</h2>'
+            + '<h3>This is a long description of the repack and all of the included updates.</h3>'
+            + '<h3>DOWNLOAD</h3><a href="https://www.keeplinks.org/p16/6aa950322ed47">Download</a>');
+        await page.waitForFunction(() => document.querySelectorAll('.ea-card .ea-panel').length === 12);
+        const fits = () => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth);
+        const overflow = await page.locator('#ea-app *').evaluateAll(elements => elements.map(element => ({
+            className: element.className, right: element.getBoundingClientRect().right,
+            visibility: getComputedStyle(element).visibility
+        })).filter(element => element.right > innerWidth).slice(0, 6));
+        assert.equal(await fits(), true, 'home must not create horizontal scrolling: ' + JSON.stringify(overflow));
+        for (const selector of ['.ea-page-info', '.ea-info-badge']) {
+            await page.locator(selector).first().focus();
+            assert.equal(await page.locator(selector + ' .ea-tip').first().isVisible(), true);
+            const tip = await page.locator(selector + ' .ea-tip').first().boundingBox();
+            assert.ok(tip.x >= 0 && tip.x + tip.width <= width, `${selector} tooltip must fit: ${JSON.stringify(tip)}`);
+            assert.equal(await fits(), true, 'a visible tooltip must not expand the viewport');
+        }
+        await page.locator('.ea-tab[href="#/all"]').click();
+        await page.getByRole('button', { name: '2', exact: true }).click();
+        await page.waitForFunction(() => document.querySelector('.ea-page.on')?.textContent === '2');
+        assert.equal(await page.locator('.ea-row-title').count(), 5);
+        assert.equal(await fits(), true, 'release pagination must fit');
+        await page.locator('.ea-tab[href="#/archive"]').click();
+        await page.locator('.ea-letter').filter({ hasText: /^S30$/ }).click();
+        await page.waitForFunction(() => document.querySelectorAll('.ea-row-title').length === 30);
+        const archiveBounds = await page.locator('.ea-archive-layout, .ea-archive-results, .ea-row').evaluateAll(elements =>
+            elements.slice(0, 3).map(element => ({ className: element.className, width: element.getBoundingClientRect().width,
+                right: element.getBoundingClientRect().right, columns: getComputedStyle(element).gridTemplateColumns })));
+        assert.equal(await fits(), true, 'long archive titles must fit: ' + JSON.stringify(archiveBounds));
+    });
 }
 
 test('Recent selects only its own navigation tab', async t => {

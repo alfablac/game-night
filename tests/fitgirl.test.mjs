@@ -70,6 +70,50 @@ test('linked screenshots open the gallery with Enter without opening an external
   assert.equal(page.context().pages().length, 1);
 });
 
+test('WordPress mobile list view keeps transformed titles, content, and controls visible', async t => {
+  // Twenty Fourteen hides post bodies below 400px. The userscript moves its title there.
+  const themeRule = '<style>@media screen and (max-width: 400px) {'
+    + '.list-view .site-content .type-post .entry-content { display: none; }}</style>';
+  const content = themeRule + '<div class="list-view"><div class="site-content">'
+    + article.replace('<article>', '<article class="type-post"><div class="entry-meta">18 September 2026</div>')
+      .replace('<div class="entry-content">', '<div class="entry-content"><h3>#123 Test game</h3>') + '</div></div>';
+  const page = await openPage(t, content, { viewport: { width: 390, height: 844 } });
+  const entry = page.locator('article .entry-content');
+  assert.equal(await entry.evaluate(element => getComputedStyle(element).display), 'block');
+  assert.equal(await page.locator('.fg-post-title').isVisible(), true);
+  assert.equal(await page.locator('.fg-tab-screenshots').isVisible(), true);
+  await page.locator('.fg-tab-screenshots').click();
+  await page.locator('#linked-shot img').click();
+  assert.equal(await page.locator('.fg-modal').count(), 1);
+  await page.keyboard.press('Escape');
+  await page.setViewportSize({ width: 1366, height: 900 });
+  assert.equal(await entry.evaluate(element => getComputedStyle(element).display), 'block');
+  assert.equal(await page.locator('.fg-post-title').isVisible(), true);
+});
+
+for (const width of [320, 390]) {
+  test(`mobile tooltips and the accessible search link stay within ${width}px`, async t => {
+    const content = '<style>.screen-reader-text { position:absolute; clip:rect(1px,1px,1px,1px); }</style>'
+      + '<div class="header-main"><div class="search-toggle"><a href="#search-container" class="screen-reader-text">Search</a></div></div>'
+      + '<article><div class="entry-content"><h3>Repack Features</h3><ul><li>'
+      + 'Based on scene FINAL.FANTASY.TACTICS.The.Ivalice.Chronicles-TENOKE ISO release: '
+      + 'tenoke-final.fantasy.tactics.the.ivalice.chronicles.iso (11,059,023,872 bytes)</li></ul>'
+      + '<p style="text-align:right">12,345,678,901 bytes</p></div></article>';
+    const page = await openPage(t, content, { viewport: { width, height: 844 } });
+    const widthFits = () => page.evaluate(() => document.body.scrollWidth <= innerWidth);
+    assert.equal(await widthFits(), true, 'inactive tooltips must not enlarge the page');
+    for (const selector of ['.fg-source', '.fg-release', '.fg-size']) {
+      await page.locator(selector).first().focus();
+      assert.equal(await widthFits(), true, selector + ' tooltip must fit while focused');
+    }
+    const search = page.locator('.search-toggle .screen-reader-text');
+    await search.focus();
+    assert.equal(await search.evaluate(element => element === document.activeElement), true);
+    assert.equal(await search.evaluate(element => element.getBoundingClientRect().right <= innerWidth), true);
+    assert.match(await page.locator('.entry-content').textContent(), /tenoke-final\.fantasy\.tactics\.the\.ivalice\.chronicles\.iso/);
+  });
+}
+
 test('unlinked screenshots are focusable and support Enter and Space', async t => {
   const page = await openPage(t);
   await page.locator('.fg-tab-screenshots').click();

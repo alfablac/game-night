@@ -1273,6 +1273,23 @@ details.fg-sidebar > .fg-sidebar-body {
 }
 
 @media (max-width: 768px) {
+  /* WordPress list view hides the body that contains our title and controls. */
+  .list-view article[data-fg-ui="2"] > .entry-content {
+    display: block !important;
+  }
+
+  .header-main .search-toggle {
+    position: relative !important;
+  }
+
+  .fg-size::after,
+  .fg-source::after,
+  .fg-release::after {
+    position: fixed !important;
+    bottom: 1rem !important;
+    box-sizing: border-box;
+  }
+
   html,
   body {
     font-size: 11px !important;

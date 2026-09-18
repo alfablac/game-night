@@ -1661,6 +1661,15 @@
         }
 
         @media (max-width: 720px) {
+            .dodi-head {
+                flex-wrap: wrap;
+            }
+            .dodi-search-bar {
+                flex-basis: 100%;
+                min-width: 0;
+                max-width: none;
+                order: 1;
+            }
             .ea-panel-modal {
                 grid-template-columns: 1fr !important;
                 grid-template-areas:

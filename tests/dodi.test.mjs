@@ -19,8 +19,8 @@ function article(title, content = '') {
     <div class="entry-content">${content}</div></article>`;
 }
 
-async function start(t, html = pinned, { nativeFetch = false, clock = false } = {}) {
-  const context = await browser.newContext({ serviceWorkers: 'block' });
+async function start(t, html = pinned, { nativeFetch = false, clock = false, viewport } = {}) {
+  const context = await browser.newContext({ serviceWorkers: 'block', ...(viewport ? { viewport } : {}) });
   const errors = [];
   t.after(async () => {
     await context.close();
@@ -73,6 +73,29 @@ async function reply(page, url, html, status = 200) {
   await page.evaluate(({ url, html, status }) => {
     window.__requests.find(request => request.url === url).options.onload({ status, responseText: html });
   }, { url, html, status });
+}
+
+for (const width of [320, 390, 1366]) {
+  test(`DODI header controls fit ${width}px and the original-site toggle remains usable`, async t => {
+    // The WordPress theme supplies border-box sizing on the live site.
+    const page = await start(t, '<style>*, *::before, *::after { box-sizing: border-box; }</style>'
+      + pinned + article('Local'), { viewport: { width, height: 900 } });
+    const bounds = await page.evaluate(() => {
+      const selectors = ['.dodi-brand', '.dodi-search-input', '.dodi-search-btn', '.dodi-btn-toggle'];
+      return selectors.map(selector => {
+        const rect = document.querySelector(selector).getBoundingClientRect();
+        return { selector, left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom };
+      });
+    });
+    for (const rect of bounds) {
+      assert.ok(rect.left >= 0 && rect.right <= width, `${rect.selector} must fit viewport: ${JSON.stringify(rect)}`);
+    }
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    await page.locator('.dodi-btn-toggle').click();
+    assert.equal(await page.evaluate(() => document.documentElement.classList.contains('dodi-on')), false);
+    await page.locator('.dodi-btn-toggle').click();
+    assert.equal(await page.evaluate(() => document.documentElement.classList.contains('dodi-on')), true);
+  });
 }
 
 test('DODI rejects executable mirror URLs while retaining web and magnet links', async t => {
