@@ -1896,28 +1896,34 @@
         var temp = document.createElement('template'); // inert: no resource loading, no script execution
         temp.innerHTML = html;
 
-        // Foreign-content animations can change a URL after attribute validation.
-        qa('script, iframe, frame, object, embed, base, meta, link, svg, math, style, noscript', temp.content).forEach(function (el) {
-            el.remove();
+        // Foreign-content animations can change a URL after attribute validation. Form controls are
+        // removed outright (collapsible bodies are prose, not forms): a <form> exposes descendant
+        // controls' id/name as OWN properties (e.g. an <input name="attributes"> shadows
+        // form.attributes), which silently defeats the attribute walk below if it trusted those
+        // instance properties, so remove first and use Element.prototype accessors afterwards.
+        qa('form, input, button, select, textarea, script, iframe, frame, object, embed, base, meta, link, svg, math, style, noscript', temp.content).forEach(function (el) {
+            Element.prototype.remove.call(el);
         });
 
         qa('*', temp.content).forEach(function (el) {
-            Array.prototype.slice.call(el.attributes).forEach(function (attr) {
+            Element.prototype.getAttributeNames.call(el).forEach(function (attrName) {
                 // URL parsers drop control characters and spaces, so strip them before the scheme check.
                 // eslint-disable-next-line no-control-regex
-                var value = attr.value.replace(/[\x00-\x20]/g, '');
-                var name = attr.name.toLowerCase();
-                if (/^on/i.test(name) || name === 'srcdoc' || /^javascript:/i.test(value)) {
-                    el.removeAttribute(attr.name);
+                var value = (Element.prototype.getAttribute.call(el, attrName) || '').replace(/[\x00-\x20]/g, '');
+                var name = attrName.toLowerCase();
+                // id/name are stripped too: fetched content lands in the live document via innerHTML,
+                // and a stray id/name can clobber document.getElementById lookups / named globals.
+                if (/^on/i.test(name) || name === 'srcdoc' || name === 'id' || name === 'name' || /^javascript:/i.test(value)) {
+                    Element.prototype.removeAttribute.call(el, attrName);
                     return;
                 }
                 if (value && /^(?:href|src|action|formaction|poster|ping|data)$/.test(name)) {
                     try {
                         if (!/^(https?:|magnet:)$/.test(new URL(value, location.href).protocol)) {
-                            el.removeAttribute(attr.name);
+                            Element.prototype.removeAttribute.call(el, attrName);
                         }
                     } catch (e) {
-                        el.removeAttribute(attr.name);
+                        Element.prototype.removeAttribute.call(el, attrName);
                     }
                 }
             });
@@ -1937,6 +1943,13 @@
                 }
                 // Remove inline font sizes to match the site font size, unless we're about to set our own below
                 if (!isHeading) el.style.fontSize = '';
+
+                // Strip layout/overlay properties: collapsible bodies are prose, not a full-viewport
+                // click-hijack surface (e.g. style="position:fixed;inset:0;z-index:...;opacity:0").
+                ['position', 'inset', 'top', 'right', 'bottom', 'left', 'zIndex', 'opacity', 'transform',
+                    'animation', 'animationName', 'transition', 'pointerEvents'].forEach(function (prop) {
+                    el.style[prop] = '';
+                });
             }
 
             // Normalize oversized headings (after the inline-style cleanup above, so it sticks)
@@ -2074,6 +2087,17 @@
         return info;
     }
 
+    // Host-anchored Zovo check: a substring test like /zovo/i.test(url) would also match
+    // e.g. http://192.168.0.1/apply.cgi?x=zovo, sending that host a privileged background request.
+    function isZovoUrl(url) {
+        try {
+            var parsed = new URL(url, location.href);
+            return /^https?:$/.test(parsed.protocol) && /(?:^|\.)(?:zovo\.ink|zovo2\.top)$/i.test(parsed.hostname);
+        } catch (e) {
+            return false;
+        }
+    }
+
     // Parse Download Links from Content element
     function parseDownloadLinksFromContent(contentEl) {
         var groups = [];
@@ -2126,7 +2150,7 @@
                             url: url,
                             label: 'Mirror ' + (mIdx + 1),
                             host: getHostName(url),
-                            isZovo: /zovo/i.test(url)
+                            isZovo: isZovoUrl(url)
                         });
                     });
 
@@ -2160,7 +2184,7 @@
                     url: url,
                     label: mirrors.length === 0 ? 'Download' : 'Mirror ' + (mIdx + 1),
                     host: getHostName(url),
-                    isZovo: /zovo/i.test(url)
+                    isZovo: isZovoUrl(url)
                 });
             });
 
@@ -2358,6 +2382,11 @@
     }
 
     function runHttpResolution(zovoUrl, cleanKey, onDone, onError) {
+        if (!isZovoUrl(zovoUrl)) {
+            if (onError) onError(new Error('Blocked host'));
+            return;
+        }
+
         function gmReq(opts) {
             return new Promise(function (resolve, reject) {
                 if (typeof GM_xmlhttpRequest !== 'function') {
@@ -2396,6 +2425,9 @@
             }
 
             var finalUrl1 = res1.finalUrl || zovoUrl;
+            if (!isZovoUrl(finalUrl1)) {
+                throw new Error('Blocked redirect host');
+            }
 
             // Step 2: POST form-continue (page 2)
             var body2 = '_method=POST' +
@@ -2429,6 +2461,9 @@
             }
 
             var finalUrl2 = res2.finalUrl || zovoUrl;
+            if (!isZovoUrl(finalUrl2)) {
+                throw new Error('Blocked redirect host');
+            }
             var origin = (new URL(finalUrl2)).origin;
 
             // Step 3: Wait 5.3s to satisfy server-side elapsed time requirement
@@ -2522,6 +2557,14 @@
         return url;
     }
 
+    // Article/pinned URLs can originate from page-writable localStorage (dodi_pinned_data) as well as
+    // the fetched page, so anchors built from them go through the same allowlist (and http->https
+    // upgrade) as requestPage before reaching href.
+    function safeArticleHref(url) {
+        var upgraded = url ? upgradeAllowedProtocol(url) : '';
+        return upgraded && isAllowedArticleUrl(upgraded) ? upgraded : '#';
+    }
+
     function requestPage(url) {
         url = upgradeAllowedProtocol(url);
         if (!isAllowedArticleUrl(url)) {
@@ -2547,6 +2590,12 @@
                         method: 'GET',
                         url: url,
                         onload: function (res) {
+                            // GM_xmlhttpRequest follows redirects on its own; re-validate where it actually
+                            // landed so an allow-listed host can't be used to fetch an off-site redirect target.
+                            if (res.finalUrl && !isAllowedArticleUrl(upgradeAllowedProtocol(res.finalUrl))) {
+                                fail(new Error('Blocked host'));
+                                return;
+                            }
                             if (res.status >= 200 && res.status < 400) {
                                 succeed(res.responseText);
                             } else {
@@ -2888,7 +2937,7 @@
         }
 
         var titleEl = E('h3', { class: 'ea-title-text' }, [
-            E('a', { href: art.url, target: '_blank', rel: 'noopener', text: art.cleanTitle || art.title })
+            E('a', { href: safeArticleHref(art.url), target: '_blank', rel: 'noopener', text: art.cleanTitle || art.title })
         ]);
 
         titleArea.append(metaRow, titleEl);
@@ -3232,7 +3281,7 @@
         var seq = ++modalSeq;
 
         modalTitle.textContent = fallbackTitle || 'Game Details';
-        modalDirectLink.href = url || '#';
+        modalDirectLink.href = safeArticleHref(url);
         modalBody.innerHTML = '';
 
         // 1. Check if full article is already in cache or in mainArticles
@@ -3362,7 +3411,7 @@
                 var card = E('article', { class: 'ea-card dodi-clickable-card' });
                 var panel = E('div', { class: 'ea-panel', style: { gridTemplateColumns: '1fr', gridTemplateAreas: '"title" "info"' } });
 
-                var titleLink = E('a', { href: item.url, text: item.title });
+                var titleLink = E('a', { href: safeArticleHref(item.url), text: item.title });
                 titleLink.addEventListener('click', function (e) {
                     e.preventDefault();
                     openGameModal(item.url, item.title);
@@ -3392,7 +3441,7 @@
 
                 var extBtn = E('a', {
                     class: 'ea-btn ea-btn-ghost',
-                    href: item.url,
+                    href: safeArticleHref(item.url),
                     target: '_blank',
                     rel: 'noopener',
                     title: 'Open original web page in new tab'
@@ -3446,7 +3495,7 @@
                 var card = E('article', { class: 'ea-card dodi-clickable-card' });
                 var panel = E('div', { class: 'ea-panel', style: { gridTemplateColumns: '1fr', gridTemplateAreas: '"title" "info"' } });
 
-                var titleLink = E('a', { href: item.url, text: item.title });
+                var titleLink = E('a', { href: safeArticleHref(item.url), text: item.title });
                 titleLink.addEventListener('click', function (e) {
                     e.preventDefault();
                     openGameModal(item.url, item.title);
@@ -3475,7 +3524,7 @@
 
                 var extBtn = E('a', {
                     class: 'ea-btn ea-btn-ghost',
-                    href: item.url,
+                    href: safeArticleHref(item.url),
                     target: '_blank',
                     rel: 'noopener',
                     title: 'Open original web page in new tab'
@@ -3541,7 +3590,7 @@
                     meta.append(E('span', { class: 'ea-badge ea-badge-green', text: item.size }));
                 }
 
-                var titleLink = E('a', { href: item.url, text: item.title });
+                var titleLink = E('a', { href: safeArticleHref(item.url), text: item.title });
                 titleLink.addEventListener('click', function (e) {
                     e.preventDefault();
                     openGameModal(item.url, item.title);
@@ -3569,7 +3618,7 @@
 
                 var extBtn = E('a', {
                     class: 'ea-btn ea-btn-ghost',
-                    href: item.url,
+                    href: safeArticleHref(item.url),
                     target: '_blank',
                     rel: 'noopener',
                     title: 'Open original web page in new tab',

@@ -1373,6 +1373,17 @@
         }
     }
 
+    // Host-anchored, symmetric with isFilecryptURL: a substring test like /keeplinks/i.test(url) would
+    // also match e.g. http://192.168.0.1/x?keeplinks=1, sending that host a privileged background request.
+    function isKeeplinksURL(value) {
+        try {
+            var parsed = new URL(value);
+            return /^https?:$/.test(parsed.protocol) && /^(?:www\.)?keeplinks\.org$/i.test(parsed.hostname);
+        } catch (error) {
+            return false;
+        }
+    }
+
     function isYouTubeURL(value) {
         try {
             var parsed = new URL(value);
@@ -1535,6 +1546,10 @@
             var report = function (message) {
                 box.replaceChildren(E('span', { class: 'ea-spin', text: message }));
             };
+
+            if (!isKeeplinksURL(url)) {
+                throw Error('Blocked host');
+            }
 
             if (!klKey) {
                 report('Opening Keeplinks…');
@@ -1841,7 +1856,7 @@
                             }
                         }));
                     }
-                    if (/keeplinks/i.test(link.h)) {
+                    if (isKeeplinksURL(link.h)) {
                         var output = E('div', { class: 'kl-out' });
                         host.append(E('button', { class: 'ea-btn', text: 'Resolve Keeplinks', onclick: function () { resolveKL(link.h, output); } }), output);
                     }
@@ -1936,7 +1951,7 @@
     function row(entry) {
         return E('div', { class: 'ea-row' }, [
             E('a', { class: 'ea-row-title', href: entry.h, text: entry.t, onclick: function (event) { event.preventDefault(); openGame(entry.h, entry.t); } }),
-            E('a', { class: 'ea-btn', href: entry.h, target: '_blank', text: '↗' })
+            E('a', { class: 'ea-btn', href: entry.h, target: '_blank', rel: 'noopener', text: '↗' })
         ]);
     }
 

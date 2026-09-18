@@ -120,6 +120,8 @@ test('archive search spans all initial letters and resolves index URLs from /dat
     await respond(page, 'ea_index_refresh=');
     assert.deepEqual(await page.locator('.ea-row-title').allTextContents(), ['Beta']);
     assert.equal(await page.locator('.ea-row-title').getAttribute('href'), 'https://elamigos.site/data/beta.html');
+    // The "open externally" row link is target=_blank; it must not run with opener access.
+    assert.equal(await page.locator('.ea-row a[target="_blank"]').first().getAttribute('rel'), 'noopener');
 });
 
 test('nested archive headings and trailing update markers are parsed', async t => {
@@ -205,6 +207,16 @@ test('download links cannot preserve executable URL schemes', async t => {
     await respond(page, '/data/alpha.html', gameHTML('Alpha') + '<a href="javascript:alert(\'filecrypt\')">Untrusted link</a>');
     assert.equal(await page.locator('.ea-modal-body a[href^="javascript:"]').count(), 0);
     assert.equal(await page.locator('.ea-modal-body a[href="https://example.test/directdownload/game"]').count(), 1);
+});
+
+test('ElAmigos treats "keeplinks" only as a hostname for the Resolve Keeplinks button', async t => {
+    const page = await open(t);
+    await respond(page, 'ea_index_refresh=');
+    await page.getByRole('link', { name: 'Alpha', exact: true }).click();
+    await respond(page, '/data/alpha.html', gameHTML('Alpha')
+        + '<a href="https://www.keeplinks.org/p16/real">Real Keeplinks</a>'
+        + '<a href="http://192.168.0.1/x?keeplinks=1">Fake LAN</a>');
+    assert.equal(await page.getByRole('button', { name: 'Resolve Keeplinks' }).count(), 1);
 });
 
 test('a stale game response cannot replace the last requested game', async t => {

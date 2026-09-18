@@ -108,6 +108,16 @@ test('DODI rejects executable mirror URLs while retaining web and magnet links',
   assert.deepEqual(protocols, ['https:', 'https:', 'magnet:', 'https:', 'https:', 'magnet:']);
 });
 
+test('DODI falls back to "#" for a pinned item whose URL is not on the allow-listed host', async t => {
+  const html = `<article class="sticky"><div class="entry-content">
+    <h2>Exclusive Repacks</h2><ul><li><a href="javascript:alert(1)">Evil Game</a></li></ul>
+  </div></article>`;
+  const page = await start(t, html);
+  await page.locator('[data-tab="exclusive"]').click();
+  assert.equal(await page.locator('.ea-title-text a', { hasText: 'Evil Game' }).getAttribute('href'), '#');
+  assert.equal(await page.getByRole('link', { name: /Original/ }).getAttribute('href'), '#');
+});
+
 test('DODI upgrades allow-listed http mirrors to https but still blocks other hosts', async t => {
   const html = `<article class="sticky"><div class="entry-content">
     <h2>Exclusive Repacks</h2><ul>
@@ -130,6 +140,19 @@ test('DODI upgrades allow-listed http mirrors to https but still blocks other ho
   assert.equal(await page.evaluate(() => window.__requests.some(request => request.url.includes('evil.test'))), false);
 });
 
+test('DODI blocks a redirect that lands off the allow-listed host', async t => {
+  const page = await start(t);
+  await page.locator('[data-tab="exclusive"]').click();
+  await page.getByRole('button', { name: 'View Release' }).first().click();
+  const url = origin + '/game-a/';
+  await page.waitForFunction(u => window.__requests.some(request => request.url === u), url);
+  // GM_xmlhttpRequest follows redirects on its own; simulate it having landed off-host.
+  await page.evaluate(u => {
+    window.__requests.find(request => request.url === u).options.onload({ status: 200, responseText: '<html></html>', finalUrl: 'https://evil.test/x' });
+  }, url);
+  await page.waitForFunction(() => (document.querySelector('.dodi-modal-body')?.textContent || '').includes('Blocked host'));
+});
+
 test('DODI evicts an invalid cached Zovo destination instead of reusing it forever', async t => {
   const content = '<h3>Download Links</h3><ul><li><a href="https://go.zovo.ink/abc">Zovo Mirror</a></li></ul>';
   const page = await start(t, pinned + article('CacheBug', content));
@@ -148,6 +171,24 @@ test('DODI evicts an invalid cached Zovo destination instead of reusing it forev
   await page.waitForFunction(() => window.__gmSets.some(entry => entry[1] === ''));
   // ...and a fresh resolution attempted against the real Zovo URL instead of trusting the bad cache.
   await page.waitForFunction(() => window.__requests.some(request => request.url === 'https://go.zovo.ink/abc'));
+});
+
+test('DODI treats "zovo" only as a hostname, not a substring anywhere in a mirror URL', async t => {
+  const content = '<h3>Download Links</h3><ul>' +
+    '<li>Real Zovo mirror: <a href="https://go.zovo.ink/abc">Mirror</a></li>' +
+    '<li>Fake LAN mirror: <a href="http://192.168.0.1/apply.cgi?action=reboot&x=zovo">Mirror</a></li>' +
+    '</ul>';
+  const page = await start(t, pinned + article('HostCheck', content));
+  await page.locator('[data-tab="exclusive"]').click();
+  await page.getByRole('button', { name: 'View Release' }).first().click();
+  await reply(page, origin + '/game-a/', article('HostCheck', content));
+  await page.locator('.dodi-modal-body .ea-card').waitFor();
+  await page.locator('.fg-downloads > summary').click();
+  // Only the real Zovo host gets a "Silent Resolve" button; the LAN URL merely containing "zovo" must not.
+  assert.equal(await page.getByRole('button', { name: 'Silent Resolve' }).count(), 1);
+  await page.getByRole('button', { name: 'Silent Resolve' }).click();
+  await page.waitForFunction(() => window.__requests.some(request => request.url === 'https://go.zovo.ink/abc'));
+  assert.equal(await page.evaluate(() => window.__requests.some(request => request.url.includes('192.168.0.1'))), false);
 });
 
 test('DODI keeps a single roving tab and a resolvable tabpanel label for an empty search results page', async t => {
@@ -331,6 +372,50 @@ test('DODI strips remote SVG animations that can turn sanitized links into scrip
   assert.equal(await section.locator('svg, math').count(), 0);
   assert.match(await section.textContent(), /Legitimate information remains visible/);
   assert.equal(await page.evaluate(() => window.__svgInjected), undefined);
+});
+
+test('DODI neutralizes form-based DOM clobbering in collapsible HTML', async t => {
+  // A descendant control named/id'd "attributes" replaces form.attributes with itself, so a naive
+  // Array.prototype.slice.call(el.attributes) walk sees [] and never inspects the form's own on*/action.
+  const content = `<div class="sp-wrap"><div class="sp-head">Information</div><div class="sp-body">
+    <p>Visible information</p>
+    <form style="animation:dodiSpin 1s" onanimationstart="window.__pwned=(window.__pwned||[]).concat('anim')"><input name="attributes">Read me</form>
+    <form action="javascript:window.__pwned=(window.__pwned||[]).concat('action')"><input name="attributes"><input type="submit" value="Show instructions"></form>
+  </div></div>`;
+  const page = await start(t);
+  await page.locator('[data-tab="exclusive"]').click();
+  await page.getByRole('button', { name: 'View Release' }).first().click();
+  await reply(page, origin + '/game-a/', article('Clobber', content));
+  await page.locator('.dodi-modal-body .ea-card').waitFor();
+  await page.evaluate(() => { window.__pwned = []; });
+  const section = page.locator('.dodi-modal-body .fg-extra-body').first();
+  await page.locator('.dodi-modal-body details.fg-extra summary', { hasText: 'Information' }).click();
+  // Give a real (unstripped) animation a chance to start and fire onanimationstart.
+  await page.waitForTimeout(300);
+  assert.deepEqual(await page.evaluate(() => window.__pwned), []);
+  assert.equal(await section.locator('form, input, button[type=submit]').count(), 0);
+  assert.doesNotMatch(await section.innerHTML(), /javascript:/i);
+  assert.match(await section.textContent(), /Visible information/);
+});
+
+test('DODI strips full-viewport overlay styling from collapsible links', async t => {
+  const content = `<div class="sp-wrap"><div class="sp-head">Information</div><div class="sp-body">
+    <p style="color: red">Warning</p>
+    <a href="https://evil.example/" style="position:fixed;inset:0;z-index:2147483647;opacity:0">Click hijack</a>
+  </div></div>`;
+  const page = await start(t);
+  await page.locator('[data-tab="exclusive"]').click();
+  await page.getByRole('button', { name: 'View Release' }).first().click();
+  await reply(page, origin + '/game-a/', article('Overlay', content));
+  await page.locator('.dodi-modal-body .ea-card').waitFor();
+  const section = page.locator('.dodi-modal-body .fg-extra-body').first();
+  const link = section.locator('a', { hasText: 'Click hijack' });
+  const style = await link.evaluate(el => ({
+    position: el.style.position, inset: el.style.inset, top: el.style.top, zIndex: el.style.zIndex, opacity: el.style.opacity
+  }));
+  assert.deepEqual(style, { position: '', inset: '', top: '', zIndex: '', opacity: '' });
+  // The unrelated red-warning colour logic must still work.
+  assert.equal(await section.locator('.dodi-warning').evaluate(el => el.style.color), 'rgb(255, 94, 94)');
 });
 
 test('DODI strips remote style blocks and non-web URL attributes from collapsible HTML', async t => {
