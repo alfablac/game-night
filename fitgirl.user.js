@@ -1,10 +1,13 @@
 // ==UserScript==
 // @name         FitGirl Modern Dark UI
 // @author       alfablac
-// @version      1.6.2
+// @version      1.6.4
 // @namespace    fitgirl.modern.violentmonkey
 // @downloadURL  https://raw.githubusercontent.com/alfablac/game-night/main/fitgirl.user.js
 // @updateURL    https://raw.githubusercontent.com/alfablac/game-night/main/fitgirl.user.js
+// @homepage     https://github.com/alfablac/game-night
+// @homepageURL  https://github.com/alfablac/game-night
+// @supportURL   https://github.com/alfablac/game-night/issues
 // @match        https://fitgirl-repacks.site/*
 // @match        https://www.fitgirl-repacks.site/*
 // @match        https://web.tolstoycomments.com/widget/*
@@ -19,7 +22,8 @@
 
   // Tolstoy is rendered in a cross-origin iframe, so its document needs its
   // own scoped stylesheet. Keep the main FitGirl UI untouched in this frame.
-  if (window.top !== window.self && /(^|\.)tolstoycomments\.com$/i.test(location.hostname)) {
+  if (/(^|\.)tolstoycomments\.com$/i.test(location.hostname)) {
+    if (window.top !== window.self) {
     GM_addStyle(`
       :root { color-scheme: dark !important; }
 
@@ -125,6 +129,7 @@
         color: #91a6b5 !important;
       }
     `);
+    }
     return;
   }
 
@@ -817,13 +822,13 @@ article.fg-upcoming-repacks .wplp_widget_13066 .wplp_thumb {
   transform: none !important;
   scroll-snap-type: x proximity !important;
   -webkit-overflow-scrolling: touch !important;
-  touch-action: pan-x pinch-zoom !important;
+  touch-action: pan-x pan-y pinch-zoom !important;
   overscroll-behavior-x: contain !important;
 }
 
 .wplp_widget_13066 .swiper-wrapper {
   transform: none !important;
-  touch-action: pan-x pinch-zoom !important;
+  touch-action: pan-x pan-y pinch-zoom !important;
 }
 
 .wplp_widget_13066 .wplp_listposts.fg-dragging {
@@ -1273,6 +1278,23 @@ details.fg-sidebar > .fg-sidebar-body {
 }
 
 @media (max-width: 768px) {
+  /* WordPress list view hides the body that contains our title and controls. */
+  .list-view article[data-fg-ui="2"] > .entry-content {
+    display: block !important;
+  }
+
+  .header-main .search-toggle {
+    position: relative !important;
+  }
+
+  .fg-size::after,
+  .fg-source::after,
+  .fg-release::after {
+    position: fixed !important;
+    bottom: 1rem !important;
+    box-sizing: border-box;
+  }
+
   html,
   body {
     font-size: 11px !important;
@@ -1863,6 +1885,20 @@ details.fg-extra > summary:hover {
     return `${value.toFixed(digits)} ${units[unit]}`;
   };
 
+  // CSS attribute selectors can't tell "color:#000" from "color:#0000ff" or
+  // "background-color:#000" (they only match a substring), so dark hoster
+  // notes get fixed up here instead: only an exact black/#333 *text* color
+  // is cleared, leaving blues, greens and dark backgrounds alone.
+  const DARK_TEXT_COLORS = new Set(['black', 'rgb(0, 0, 0)', 'rgb(51, 51, 51)']);
+
+  const fixDarkTextColors = c => {
+    c.querySelectorAll('[style]').forEach(el => {
+      if (DARK_TEXT_COLORS.has(el.style.color)) {
+        el.style.removeProperty('color');
+      }
+    });
+  };
+
   const formatSizes = c => {
     if (c.dataset.fgSizes) return;
     c.dataset.fgSizes = '1';
@@ -2004,7 +2040,7 @@ details.fg-extra > summary:hover {
         l[i].tagName === 'H3' ||
         isSub(l[i]) ||
         isExtra(l[i]) ||
-        l[i].matches?.('details.fg-extra')
+        l[i].matches?.('details.fg-extra, .fg-tab-panel, .fg-tabs')
       ) {
         return i;
       }
@@ -2014,6 +2050,7 @@ details.fg-extra > summary:hover {
   };
 
   const gallery = (imgs, start) => {
+    const opener = document.activeElement;
     const m = mk('div', 'fg-modal');
     m.setAttribute('role', 'dialog');
     m.setAttribute('aria-modal', 'true');
@@ -2028,6 +2065,7 @@ details.fg-extra > summary:hover {
       const href = imgs[i].closest('a[href]')?.href;
       const isImage = href && /\.(?:avif|gif|jpe?g|png|webp)(?:[?#]|$)/i.test(href);
       pic.src = isImage ? href : imgs[i].currentSrc || imgs[i].src;
+      pic.alt = imgs[i].alt || `Screenshot ${i + 1}`;
     };
 
     const go = s => {
@@ -2038,8 +2076,15 @@ details.fg-extra > summary:hover {
     const close = mk('button', 'fg-close', '\u00d7');
     const prev = mk('button', 'fg-prev', '\u2039');
     const next = mk('button', 'fg-next', '\u203a');
+    close.setAttribute('aria-label', 'Close image viewer');
+    prev.setAttribute('aria-label', 'Previous image');
+    next.setAttribute('aria-label', 'Next image');
 
-    close.onclick = () => m.remove();
+    const dismiss = () => {
+      m.remove();
+      if (opener?.isConnected) opener.focus({ preventScroll: true });
+    };
+    close.onclick = dismiss;
 
     prev.onclick = e => {
       e.stopPropagation();
@@ -2053,17 +2098,28 @@ details.fg-extra > summary:hover {
 
     m.onclick = e => {
       if (e.target === m) {
-        m.remove();
+        dismiss();
       }
     };
 
     m.onkeydown = e => {
       if (e.key === 'Escape') {
-        m.remove();
+        e.preventDefault();
+        dismiss();
       } else if (e.key === 'ArrowLeft') {
+        e.preventDefault();
         go(i - 1);
       } else if (e.key === 'ArrowRight') {
+        e.preventDefault();
         go(i + 1);
+      } else if (e.key === 'Tab') {
+        const controls = [close, prev, next];
+        const current = controls.indexOf(document.activeElement);
+        const target = current < 0
+          ? (e.shiftKey ? next : close)
+          : controls[(current + (e.shiftKey ? -1 : 1) + controls.length) % controls.length];
+        e.preventDefault();
+        target.focus();
       }
     };
 
@@ -2301,7 +2357,27 @@ details.fg-extra > summary:hover {
       if (im.dataset.fgShot) return;
       im.dataset.fgShot = '1';
       im.classList.add('fg-shot');
-      im.onclick = () => gallery(imgs, i);
+      const link = im.closest('a[href]');
+      im.onclick = e => {
+        if (link && (e.ctrlKey || e.metaKey || e.shiftKey)) return;
+        e.preventDefault();
+        gallery(imgs, i);
+      };
+      if (link) {
+        link.addEventListener('click', e => {
+          if (e.target === link && link.querySelector('img') === im) im.onclick(e);
+        });
+      } else {
+        im.tabIndex = 0;
+        im.setAttribute('role', 'button');
+        im.setAttribute('aria-label', im.alt || `Open screenshot ${i + 1}`);
+        im.onkeydown = e => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            im.click();
+          }
+        };
+      }
     });
   };
 
@@ -2538,6 +2614,7 @@ details.fg-extra > summary:hover {
       cleanDigest(c);
     }
 
+    fixDarkTextColors(c);
     formatSizes(c);
     formatSources(c);
     formatLabels(c);
@@ -2600,6 +2677,7 @@ details.fg-extra > summary:hover {
       title.remove();
       [...widget.childNodes].forEach(node => body.append(node));
       details.append(summary, body);
+      details.open = window.innerWidth > 900;
       widget.append(details);
       widget.dataset.fgPopular = '1';
     });
@@ -2638,13 +2716,17 @@ details.fg-extra > summary:hover {
   const expandPagination = () => {
     document.querySelectorAll('.paging-navigation').forEach(pagination => {
       const currentNode = pagination.querySelector('.page-numbers.current');
-      const lastLink = [...pagination.querySelectorAll('a.page-numbers:not(.next)')]
-        .sort((a, b) => Number(b.textContent) - Number(a.textContent))[0];
-      if (!currentNode || !lastLink || pagination.dataset.fgExpanded) return;
+      const lastLink = [...pagination.querySelectorAll('a.page-numbers:not(.next):not(.prev)')]
+        .sort((a, b) => Number(b.textContent) - Number(a.textContent))[0]
+        || pagination.querySelector('a.page-numbers.prev, a.page-numbers.next');
+      if (!currentNode || pagination.dataset.fgExpanded) return;
 
       const current = Number(T(currentNode));
-      const last = Number(T(lastLink));
+      const last = Math.max(Number(T(lastLink)) || 0, current);
       if (!Number.isInteger(current) || !Number.isInteger(last) || last < 2) return;
+
+      const hrefSource = lastLink || pagination.querySelector('a.page-numbers');
+      if (!hrefSource) return;
 
       const pages = last <= 10
         ? Array.from({ length: last }, (_, i) => i + 1)
@@ -2655,12 +2737,12 @@ details.fg-extra > summary:hover {
             : [1, current - 2, current - 1, current, current + 1, current + 2, last];
       const unique = [...new Set(pages.filter(n => n > 0 && n <= last))];
       const next = pagination.querySelector('.next.page-numbers');
-      if (!next) return;
+      const mount = next || pagination.querySelector('.pagination') || pagination;
 
-      pagination.querySelectorAll('.page-numbers:not(.next)').forEach(node => node.remove());
+      pagination.querySelectorAll('.page-numbers:not(.next):not(.prev)').forEach(node => node.remove());
 
       const href = page => {
-        const url = new URL(lastLink.href);
+        const url = new URL(hrefSource.href);
         url.pathname = url.pathname.replace(/page\/\d+\/?$/, page === 1 ? '' : `page/${page}/`);
         return url.href;
       };
@@ -2668,13 +2750,13 @@ details.fg-extra > summary:hover {
         if (i && page > unique[i - 1] + 1) {
           const dots = mk('span', 'page-numbers dots');
           dots.textContent = '…';
-          next.before(dots);
+          next ? next.before(dots) : mount.append(dots);
         }
         const node = page === current ? mk('span', 'page-numbers current') : mk('a', 'page-numbers');
         node.textContent = String(page);
         if (node.tagName === 'A') node.href = href(page);
         node.setAttribute(page === current ? 'aria-current' : 'data-page', page === current ? 'page' : String(page));
-        next.before(node);
+        next ? next.before(node) : mount.append(node);
       });
       pagination.dataset.fgExpanded = '1';
     });
@@ -2700,7 +2782,7 @@ details.fg-extra > summary:hover {
     const sidebar = document.querySelector('#content-sidebar');
     const supplementary = document.querySelector('#supplementary');
 
-    if (!sidebar || !supplementary || supplementary.parentElement === sidebar) {
+    if (!sidebar || !supplementary || sidebar.contains(supplementary)) {
       return;
     }
 
@@ -2762,7 +2844,7 @@ details.fg-extra > summary:hover {
       };
 
       const fragment = document.createDocumentFragment();
-      fragment.append(match[1], match[2], source, value.slice(match.index + match[0].length));
+      fragment.append(value.slice(0, match.index), match[1], match[2], source, value.slice(match.index + match[0].length));
       node.replaceWith(fragment);
     });
   };
@@ -2840,6 +2922,10 @@ details.fg-extra > summary:hover {
 
         list.addEventListener('pointermove', event => {
           if (!active) return;
+          if (event.pointerType === 'mouse' && !(event.buttons & 1)) {
+            finishDrag();
+            return;
+          }
 
           const deltaX = event.clientX - startX;
           const deltaY = event.clientY - startY;
@@ -2906,7 +2992,7 @@ details.fg-extra > summary:hover {
       alignHeader();
       const isDesktop = window.innerWidth > 900;
       if (isDesktop !== sidebarDesktop) {
-        document.querySelectorAll('details.fg-sidebar').forEach(sidebar => {
+        document.querySelectorAll('details.fg-sidebar, details.fg-popular-repacks').forEach(sidebar => {
           sidebar.open = isDesktop;
         });
         sidebarDesktop = isDesktop;
@@ -2952,22 +3038,22 @@ details.fg-extra > summary:hover {
     );
 
   const run = () => {
-    observer.disconnect();
-
-    unwrapMore(document);
-    markWidgets();
-    collapsePopular();
-    moveSupplementary();
-    collapseSidebar();
-    movePagination();
-    expandPagination();
-    syncPagination();
-    alignHeader();
-    removeDuplicateCommentIcons();
-    stabilizeLatestRepacks();
-    enableLatestRepacksTouch();
-
     try {
+      observer.disconnect();
+
+      unwrapMore(document);
+      markWidgets();
+      collapsePopular();
+      moveSupplementary();
+      collapseSidebar();
+      movePagination();
+      expandPagination();
+      syncPagination();
+      alignHeader();
+      removeDuplicateCommentIcons();
+      stabilizeLatestRepacks();
+      enableLatestRepacksTouch();
+
       document.querySelectorAll('article').forEach(article => {
         try {
           processArticle(article);

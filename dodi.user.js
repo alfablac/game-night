@@ -1,11 +1,14 @@
 // ==UserScript==
 // @name         DODI Repacks Modern UI & Shortlink Bypass
 // @namespace    dodi.modern.ui
-// @version      1.5.3
+// @version      1.5.5
 // @description  Modern responsive dark UI for DODI Repacks using Inter typography, exact ElAmigos card layout (poster + description + compact collapsible sections for Information, Repack Features, Backwards Compatibility & Download Links), enlarged game details modal for Free Activation, Exclusive & Trending tabs, persistent pinned posts across pagination and search, auto-loading search 5-by-5, IndexedDB persistent link cache, batch mirror resolution, and direct background HTTP shortlink bypass.
 // @author       alfablac
 // @downloadURL  https://raw.githubusercontent.com/alfablac/game-night/main/dodi.user.js
 // @updateURL    https://raw.githubusercontent.com/alfablac/game-night/main/dodi.user.js
+// @homepage     https://github.com/alfablac/game-night
+// @homepageURL  https://github.com/alfablac/game-night
+// @supportURL   https://github.com/alfablac/game-night/issues
 // @match        https://dodi-repacks.site/*
 // @match        https://www.dodi-repacks.site/*
 // @match        *://go.zovo.ink/*
@@ -17,7 +20,6 @@
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_setClipboard
-// @grant        GM_registerMenuCommand
 // @grant        unsafeWindow
 // @connect      dodi-repacks.site
 // @connect      www.dodi-repacks.site
@@ -120,6 +122,26 @@
         }).catch(function () { return false; });
     }
 
+    function idbDeleteZovo(zovoUrl) {
+        return getDB().then(function (db) {
+            return new Promise(function (resolve) {
+                try {
+                    var tx = db.transaction('zovo_links', 'readwrite');
+                    var store = tx.objectStore('zovo_links');
+                    var cleanKey = (zovoUrl || '').replace(/^https?:\/\//i, '').replace(/\/+$/, '').toLowerCase();
+                    var normUrl = (zovoUrl || '').replace(/^http:\/\//i, 'https://');
+                    store.delete(zovoUrl);
+                    store.delete(cleanKey);
+                    store.delete(normUrl);
+                    tx.oncomplete = function () { resolve(true); };
+                    tx.onerror = function () { resolve(false); };
+                } catch (e) {
+                    resolve(false);
+                }
+            });
+        }).catch(function () { return false; });
+    }
+
     /* =========================================================================
        2. ZOVO SHORTLINK AUTO-BYPASS ENGINE (Active on Zovo domains)
        ========================================================================= */
@@ -213,7 +235,7 @@
         }
 
         function notifyResolved(targetUrl) {
-            if (resolved || !targetUrl || targetUrl.includes('javascript:') || targetUrl.includes('/undefined')) return;
+            if (resolved || !isDownloadUrl(targetUrl) || String(targetUrl).includes('/undefined')) return;
             resolved = true;
             console.log('[DODI Bypass] Destination link resolved:', targetUrl);
 
@@ -364,6 +386,7 @@
         var markup = SVG_ICONS[name] || '';
         var span = document.createElement('span');
         span.className = 'dodi-svg-icon';
+        span.setAttribute('aria-hidden', 'true');
         span.innerHTML = markup;
         return span;
     }
@@ -1662,6 +1685,15 @@
         }
 
         @media (max-width: 720px) {
+            .dodi-head {
+                flex-wrap: wrap;
+            }
+            .dodi-search-bar {
+                flex-basis: 100%;
+                min-width: 0;
+                max-width: none;
+                order: 1;
+            }
             .ea-panel-modal {
                 grid-template-columns: 1fr !important;
                 grid-template-areas:
@@ -1719,7 +1751,8 @@
                         var a = q('a', li);
                         if (!a) return;
                         var rawText = txt(li);
-                        var title = txt(a) || rawText;
+                        var aText = txt(a);
+                        var title = (aText && !/^Available Now$/i.test(aText)) ? aText : rawText;
                         var cleanTitle = title.replace(/\s*[\u2013-]\s*Available Now/i, '').trim();
                         result.freeActivation.push({
                             title: cleanTitle,
@@ -1835,6 +1868,8 @@
 
     // Fetch pinned threads from home page in background when on a page without sticky post
     function fetchHomePagePinned() {
+        state.pinnedLoading = true;
+        state.pinnedError = '';
         requestPage('https://dodi-repacks.site/').then(function (html) {
             var parser = new DOMParser();
             var doc = parser.parseFromString(html, 'text/html');
@@ -1843,28 +1878,57 @@
                 state.pinnedData = remotePinned;
                 savePinnedData(remotePinned);
                 updateTabBadges();
-                if (state.activeTab === 'activation' || state.activeTab === 'exclusive' || state.activeTab === 'trending') {
-                    renderCurrentTab();
-                }
             }
         }).catch(function (err) {
+            state.pinnedError = err.message;
             console.warn('[DODI] Failed to background fetch pinned threads:', err);
+        }).finally(function () {
+            state.pinnedLoading = false;
+            if (state.activeTab === 'activation' || state.activeTab === 'exclusive' || state.activeTab === 'trending') {
+                renderCurrentTab();
+            }
         });
     }
 
     // Sanitize HTML inside collapsible buttons: convert text to white, maintaining ONLY red warnings
     function sanitizeCollapsibleHtml(html) {
         if (!html) return '';
-        var temp = document.createElement('div');
+        var temp = document.createElement('template'); // inert: no resource loading, no script execution
         temp.innerHTML = html;
 
-        qa('*', temp).forEach(function (el) {
-            // Normalize oversized headings
-            if (/^H[1-6]$/i.test(el.tagName)) {
-                el.style.fontSize = '12.5px';
-                el.style.margin = '6px 0 3px 0';
-                el.style.fontWeight = '700';
-            }
+        // Foreign-content animations can change a URL after attribute validation. Form controls are
+        // removed outright (collapsible bodies are prose, not forms): a <form> exposes descendant
+        // controls' id/name as OWN properties (e.g. an <input name="attributes"> shadows
+        // form.attributes), which silently defeats the attribute walk below if it trusted those
+        // instance properties, so remove first and use Element.prototype accessors afterwards.
+        qa('form, input, button, select, textarea, dialog, script, iframe, frame, object, embed, base, meta, link, svg, math, style, noscript', temp.content).forEach(function (el) {
+            Element.prototype.remove.call(el);
+        });
+
+        qa('*', temp.content).forEach(function (el) {
+            Element.prototype.getAttributeNames.call(el).forEach(function (attrName) {
+                // URL parsers drop control characters and spaces, so strip them before the scheme check.
+                // eslint-disable-next-line no-control-regex
+                var value = (Element.prototype.getAttribute.call(el, attrName) || '').replace(/[\x00-\x20]/g, '');
+                var name = attrName.toLowerCase();
+                // id/name are stripped too: fetched content lands in the live document via innerHTML,
+                // and a stray id/name can clobber document.getElementById lookups / named globals.
+                if (/^on/i.test(name) || name === 'srcdoc' || name === 'popover' || name === 'id' || name === 'name' || /^javascript:/i.test(value)) {
+                    Element.prototype.removeAttribute.call(el, attrName);
+                    return;
+                }
+                if (value && /^(?:href|src|action|formaction|poster|ping|data)$/.test(name)) {
+                    try {
+                        if (!/^(https?:|magnet:)$/.test(new URL(value, location.href).protocol)) {
+                            Element.prototype.removeAttribute.call(el, attrName);
+                        }
+                    } catch (e) {
+                        Element.prototype.removeAttribute.call(el, attrName);
+                    }
+                }
+            });
+
+            var isHeading = /^H[1-6]$/i.test(el.tagName);
 
             var style = el.getAttribute('style') || '';
             if (style) {
@@ -1877,8 +1941,22 @@
                     // Remove clashing inline color (e.g. #003300 dark green, #00ff00 neon, #00ffff)
                     el.style.color = '';
                 }
-                // Remove inline font sizes to match the site font size
-                el.style.fontSize = '';
+                // Remove inline font sizes to match the site font size, unless we're about to set our own below
+                if (!isHeading) el.style.fontSize = '';
+
+                // Strip layout/overlay properties: collapsible bodies are prose, not a full-viewport
+                // click-hijack surface (e.g. style="position:fixed;inset:0;z-index:...;opacity:0").
+                ['position', 'inset', 'top', 'right', 'bottom', 'left', 'zIndex', 'opacity', 'transform',
+                    'animation', 'animationName', 'transition', 'pointerEvents'].forEach(function (prop) {
+                    el.style[prop] = '';
+                });
+            }
+
+            // Normalize oversized headings (after the inline-style cleanup above, so it sticks)
+            if (isHeading) {
+                el.style.fontSize = '12.5px';
+                el.style.margin = '6px 0 3px 0';
+                el.style.fontWeight = '700';
             }
         });
 
@@ -1967,6 +2045,7 @@
         if (dateM) info.releaseDate = cleanSpecVal(dateM[1]);
 
         var sizeM = html.match(/Repack\s*Size\s*:\s*(?:from\s*)?([0-9.]+\s*(?:GB|MB))/i) ||
+                    fullText.match(/Repack\s*Size\s*:\s*(?:from\s*)?([0-9.]+\s*(?:GB|MB))/i) ||
                     fullText.match(/\((?:From\s*)?([0-9.]+\s*(?:GB|MB))\)/i);
         if (sizeM) info.repackSize = sizeM[1];
 
@@ -2008,6 +2087,17 @@
         return info;
     }
 
+    // Host-anchored Zovo check: a substring test like /zovo/i.test(url) would also match
+    // e.g. http://192.168.0.1/apply.cgi?x=zovo, sending that host a privileged background request.
+    function isZovoUrl(url) {
+        try {
+            var parsed = new URL(url, location.href);
+            return /^https?:$/.test(parsed.protocol) && /(?:^|\.)(?:zovo\.ink|zovo2\.top)$/i.test(parsed.hostname);
+        } catch (e) {
+            return false;
+        }
+    }
+
     // Parse Download Links from Content element
     function parseDownloadLinksFromContent(contentEl) {
         var groups = [];
@@ -2018,11 +2108,11 @@
         if (dlIndex === -1) dlIndex = 0;
 
         var sectionHtml = html.substring(dlIndex);
-        var tempDiv = document.createElement('div');
+        var tempDiv = document.createElement('template'); // inert: no resource loading, no script execution
         tempDiv.innerHTML = sectionHtml;
 
         var currentCategory = 'Direct & Torrent Downloads';
-        var elements = qa('p, ol, ul, h2, h3, h4', tempDiv);
+        var elements = qa('p, ol, ul, h2, h3, h4', tempDiv.content);
 
         elements.forEach(function (el) {
             var text = txt(el);
@@ -2032,11 +2122,11 @@
                 return;
             }
 
-            if (/elamigos Updates/i.test(text)) {
+            if (/elamigos Updates?/i.test(text)) {
                 currentCategory = 'ElAmigos Updates';
                 return;
             }
-            if (/RUNE Updates/i.test(text)) {
+            if (/RUNE Updates?/i.test(text)) {
                 currentCategory = 'RUNE Updates';
                 return;
             }
@@ -2055,12 +2145,12 @@
                     var mirrors = [];
                     liLinks.forEach(function (a, mIdx) {
                         var url = a.getAttribute('href') || '';
-                        if (!url || url.startsWith('javascript:') || /dodi-repacks\.site\/(?:category|tag|author)/i.test(url)) return;
+                        if (!isDownloadUrl(url) || /dodi-repacks\.site\/(?:category|tag|author)/i.test(url)) return;
                         mirrors.push({
                             url: url,
                             label: 'Mirror ' + (mIdx + 1),
                             host: getHostName(url),
-                            isZovo: /zovo/i.test(url)
+                            isZovo: isZovoUrl(url)
                         });
                     });
 
@@ -2089,12 +2179,12 @@
             var mirrors = [];
             links.forEach(function (a, mIdx) {
                 var url = a.getAttribute('href') || '';
-                if (!url || url.startsWith('javascript:') || /dodi-repacks\.site\/(?:category|tag|author)/i.test(url)) return;
+                if (!isDownloadUrl(url) || /dodi-repacks\.site\/(?:category|tag|author)/i.test(url)) return;
                 mirrors.push({
                     url: url,
                     label: mirrors.length === 0 ? 'Download' : 'Mirror ' + (mIdx + 1),
                     host: getHostName(url),
-                    isZovo: /zovo/i.test(url)
+                    isZovo: isZovoUrl(url)
                 });
             });
 
@@ -2112,6 +2202,15 @@
         });
 
         return groups;
+    }
+
+    function isDownloadUrl(url) {
+        if (!url) return false;
+        try {
+            return /^(https?:|magnet:)$/.test(new URL(url, location.href).protocol);
+        } catch (e) {
+            return false;
+        }
     }
 
     function getHostName(url) {
@@ -2222,22 +2321,35 @@
         if (typeof GM_getValue === 'function') {
             var gmCached = GM_getValue('dodi_zovo_' + cleanKey) || GM_getValue('dodi_zovo_' + zovoUrl);
             if (gmCached) {
-                console.log('[DODI Resolver] Found in GM cache:', gmCached);
-                onDone(gmCached);
-                return;
+                if (isDownloadUrl(gmCached)) {
+                    console.log('[DODI Resolver] Found in GM cache:', gmCached);
+                    onDone(gmCached);
+                    return;
+                }
+                // Stale/invalid cached destination: evict it and fall through to a fresh resolution.
+                console.warn('[DODI Resolver] Evicting invalid GM cache entry:', gmCached);
+                if (typeof GM_setValue === 'function') {
+                    GM_setValue('dodi_zovo_' + cleanKey, '');
+                    GM_setValue('dodi_zovo_' + zovoUrl, '');
+                }
             }
         }
 
         // 2. Check IndexedDB persistent cache
         idbGetZovo(zovoUrl).then(function (idbCached) {
             if (idbCached) {
-                console.log('[DODI Resolver] Found in IndexedDB cache:', idbCached);
-                if (typeof GM_setValue === 'function') {
-                    GM_setValue('dodi_zovo_' + cleanKey, idbCached);
-                    GM_setValue('dodi_zovo_' + zovoUrl, idbCached);
+                if (isDownloadUrl(idbCached)) {
+                    console.log('[DODI Resolver] Found in IndexedDB cache:', idbCached);
+                    if (typeof GM_setValue === 'function') {
+                        GM_setValue('dodi_zovo_' + cleanKey, idbCached);
+                        GM_setValue('dodi_zovo_' + zovoUrl, idbCached);
+                    }
+                    onDone(idbCached);
+                    return;
                 }
-                onDone(idbCached);
-                return;
+                // Stale/invalid cached destination: evict it and fall through to a fresh resolution.
+                console.warn('[DODI Resolver] Evicting invalid IndexedDB cache entry:', idbCached);
+                idbDeleteZovo(zovoUrl);
             }
 
             // Build list of candidate URLs to try: primary first, then fallbacks
@@ -2270,6 +2382,11 @@
     }
 
     function runHttpResolution(zovoUrl, cleanKey, onDone, onError) {
+        if (!isZovoUrl(zovoUrl)) {
+            if (onError) onError(new Error('Blocked host'));
+            return;
+        }
+
         function gmReq(opts) {
             return new Promise(function (resolve, reject) {
                 if (typeof GM_xmlhttpRequest !== 'function') {
@@ -2308,6 +2425,9 @@
             }
 
             var finalUrl1 = res1.finalUrl || zovoUrl;
+            if (!isZovoUrl(finalUrl1)) {
+                throw new Error('Blocked redirect host');
+            }
 
             // Step 2: POST form-continue (page 2)
             var body2 = '_method=POST' +
@@ -2341,6 +2461,9 @@
             }
 
             var finalUrl2 = res2.finalUrl || zovoUrl;
+            if (!isZovoUrl(finalUrl2)) {
+                throw new Error('Blocked redirect host');
+            }
             var origin = (new URL(finalUrl2)).origin;
 
             // Step 3: Wait 5.3s to satisfy server-side elapsed time requirement
@@ -2369,7 +2492,7 @@
         }).then(function (resGo) {
             var dataGo = resGo.responseText || '';
             var json = JSON.parse(dataGo);
-            if (json && json.url) {
+            if (json && isDownloadUrl(json.url)) {
                 console.log('[DODI Resolver] Destination link resolved:', json.url);
                 if (typeof GM_setValue === 'function') {
                     GM_setValue('dodi_zovo_' + cleanKey, json.url);
@@ -2394,11 +2517,15 @@
     var state = {
         activeTab: 'main',
         pinnedData: { freeActivation: [], exclusive: [], trending: [] },
+        pinnedLoading: false,
+        pinnedError: '',
         mainArticles: [],
         pagination: [],
         searchQuery: '',
         searchAllResults: [],
         searchLoadedCount: 0,
+        searchSeq: 0,
+        searchError: '',
         isSearching: false,
         articleCache: {}
     };
@@ -2406,35 +2533,111 @@
     var appRoot = null;
     var mainViewContainer = null;
 
+    function isAllowedArticleUrl(url) {
+        try {
+            var parsed = new URL(url, location.href);
+            return parsed.protocol === 'https:' && /^(?:www\.)?(?:dodi-repacks\.site|game-repack\.site)$/i.test(parsed.hostname);
+        } catch (e) {
+            return false;
+        }
+    }
+
+    // Allow-listed hosts used to redirect http->https; upgrade in place instead of blocking so we
+    // still request them (GM_xmlhttpRequest doesn't follow that redirect automatically for us here).
+    function upgradeAllowedProtocol(url) {
+        try {
+            var parsed = new URL(url, location.href);
+            if (parsed.protocol === 'http:' && /^(?:www\.)?(?:dodi-repacks\.site|game-repack\.site)$/i.test(parsed.hostname)) {
+                parsed.protocol = 'https:';
+                return parsed.href;
+            }
+        } catch (e) {
+            // fall through; isAllowedArticleUrl will reject invalid URLs below
+        }
+        return url;
+    }
+
+    // Article/pinned URLs can originate from page-writable localStorage (dodi_pinned_data) as well as
+    // the fetched page, so anchors built from them go through the same allowlist (and http->https
+    // upgrade) as requestPage before reaching href.
+    function safeArticleHref(url) {
+        var upgraded = url ? upgradeAllowedProtocol(url) : '';
+        return upgraded && isAllowedArticleUrl(upgraded) ? upgraded : '#';
+    }
+
     function requestPage(url) {
+        url = upgradeAllowedProtocol(url);
+        if (!isAllowedArticleUrl(url)) {
+            return Promise.reject(new Error('Blocked host'));
+        }
         return new Promise(function (resolve, reject) {
-            if (typeof GM_xmlhttpRequest === 'function') {
-                GM_xmlhttpRequest({
-                    method: 'GET',
-                    url: url,
-                    onload: function (res) {
-                        if (res.status >= 200 && res.status < 400) {
-                            resolve(res.responseText);
-                        } else {
-                            reject(new Error('HTTP status ' + res.status));
+            var request;
+            var timer = setTimeout(function () {
+                fail(new Error('Request timed out'));
+                if (request && typeof request.abort === 'function') request.abort();
+            }, 30000);
+            function succeed(html) {
+                clearTimeout(timer);
+                resolve(html);
+            }
+            function fail(error) {
+                clearTimeout(timer);
+                reject(error);
+            }
+            try {
+                if (typeof GM_xmlhttpRequest === 'function') {
+                    request = GM_xmlhttpRequest({
+                        method: 'GET',
+                        url: url,
+                        onload: function (res) {
+                            // GM_xmlhttpRequest follows redirects on its own; re-validate where it actually
+                            // landed so an allow-listed host can't be used to fetch an off-site redirect target.
+                            if (res.finalUrl && !isAllowedArticleUrl(upgradeAllowedProtocol(res.finalUrl))) {
+                                fail(new Error('Blocked host'));
+                                return;
+                            }
+                            if (res.status >= 200 && res.status < 400) {
+                                succeed(res.responseText);
+                            } else {
+                                fail(new Error('HTTP status ' + res.status));
+                            }
+                        },
+                        onerror: function (res) {
+                            fail(new Error('Network error' + (res && res.statusText ? ': ' + res.statusText : '')));
+                        },
+                        ontimeout: function () {
+                            fail(new Error('Request timed out'));
+                        },
+                        onabort: function () {
+                            fail(new Error('Request aborted'));
                         }
-                    },
-                    onerror: reject
-                });
-            } else {
-                fetch(url).then(function (res) {
-                    if (!res.ok) throw new Error('HTTP status ' + res.status);
-                    return res.text();
-                }).then(resolve).catch(reject);
+                    });
+                } else {
+                    request = new AbortController();
+                    fetch(url, { signal: request.signal }).then(function (res) {
+                        if (!res.ok) throw new Error('HTTP status ' + res.status);
+                        return res.text();
+                    }).then(succeed).catch(fail);
+                }
+            } catch (error) {
+                fail(error);
             }
         });
     }
 
+    function updateActiveTabs() {
+        qa('.dodi-tab', appRoot).forEach(function (t) {
+            var selected = t.getAttribute('data-tab') === state.activeTab;
+            t.classList.toggle('active', selected);
+            t.setAttribute('aria-selected', String(selected));
+            t.tabIndex = selected ? 0 : -1;
+        });
+        if (mainViewContainer) mainViewContainer.setAttribute('aria-labelledby', 'dodi-tab-' + state.activeTab);
+    }
+
     function switchTab(tabName) {
         state.activeTab = tabName;
-        qa('.dodi-tab', appRoot).forEach(function (t) {
-            t.classList.toggle('active', t.getAttribute('data-tab') === tabName);
-        });
+        updateActiveTabs();
         renderCurrentTab();
     }
 
@@ -2460,6 +2663,7 @@
             class: 'dodi-search-input',
             type: 'text',
             placeholder: 'Search repacks (e.g. the sims, stalker)...',
+            'aria-label': 'Search repacks',
             value: state.searchQuery,
             onkeydown: function (e) {
                 if (e.key === 'Enter') {
@@ -2500,7 +2704,21 @@
 
         // Tabs
         var navBar = E('nav', { class: 'dodi-nav-bar' });
-        var tabsWrap = E('div', { class: 'dodi-tabs-wrap' });
+        var tabsWrap = E('div', { class: 'dodi-tabs-wrap', role: 'tablist', 'aria-label': 'Repack categories' });
+        tabsWrap.addEventListener('keydown', function (e) {
+            var tab = e.target.closest('.dodi-tab');
+            if (!tab) return;
+            var tabs = qa('.dodi-tab', tabsWrap);
+            var index = tabs.indexOf(tab);
+            if (e.key === 'ArrowRight') index = (index + 1) % tabs.length;
+            else if (e.key === 'ArrowLeft') index = (index - 1 + tabs.length) % tabs.length;
+            else if (e.key === 'Home') index = 0;
+            else if (e.key === 'End') index = tabs.length - 1;
+            else if (e.key !== 'Enter' && e.key !== ' ') return;
+            e.preventDefault();
+            switchTab(tabs[index].getAttribute('data-tab'));
+            tabs[index].focus();
+        });
 
         var tabs = [
             { id: 'main', icon: 'apps', label: 'Main Releases' },
@@ -2509,13 +2727,18 @@
             { id: 'trending', icon: 'fire', label: 'Trending', count: state.pinnedData.trending.length }
         ];
 
-        if (state.searchAllResults.length > 0 || state.isSearching) {
+        if (state.searchAllResults.length > 0 || state.isSearching || state.activeTab === 'search') {
             tabs.push({ id: 'search', icon: 'search', label: 'Search Results', count: state.searchAllResults.length });
         }
 
         tabs.forEach(function (tab) {
             var tabEl = E('div', {
                 class: 'dodi-tab' + (state.activeTab === tab.id ? ' active' : ''),
+                id: 'dodi-tab-' + tab.id,
+                role: 'tab',
+                'aria-controls': 'dodi-main-panel',
+                'aria-selected': String(state.activeTab === tab.id),
+                tabindex: state.activeTab === tab.id ? '0' : '-1',
                 'data-tab': tab.id,
                 onclick: function () { switchTab(tab.id); }
             }, [
@@ -2544,6 +2767,9 @@
         if (!searchTab) {
             searchTab = E('div', {
                 class: 'dodi-tab active',
+                id: 'dodi-tab-search',
+                role: 'tab',
+                'aria-controls': 'dodi-main-panel',
                 'data-tab': 'search',
                 onclick: function () { switchTab('search'); }
             }, [
@@ -2553,9 +2779,7 @@
             tabsWrap.append(searchTab);
         }
 
-        qa('.dodi-tab', tabsWrap).forEach(function (t) {
-            t.classList.toggle('active', t.getAttribute('data-tab') === 'search');
-        });
+        updateActiveTabs();
 
         updateSearchTabBadge();
     }
@@ -2642,10 +2866,13 @@
                     btnAllText.textContent = 'Resolving ' + colName + '...';
 
                     var idx = 0;
+                    var skipped = 0;
                     var step = function () {
                         if (idx >= colItems.length) {
                             btnAllText.textContent = colName + ' Done';
-                            showToast('All ' + colName + ' links resolved!');
+                            showToast(skipped > 0
+                                ? (colItems.length - skipped) + '/' + colItems.length + ' ' + colName + ' links resolved (' + skipped + ' failed)'
+                                : 'All ' + colName + ' links resolved!');
                             return;
                         }
                         var item = colItems[idx];
@@ -2658,6 +2885,12 @@
                         btnAllText.textContent = 'Resolving ' + colName + ' (' + (idx + 1) + '/' + colItems.length + ')...';
 
                         resolveZovoSilently(item.mirror.url, item.mirror.fallbackUrls, function (directUrl) {
+                            if (!isDownloadUrl(directUrl)) {
+                                skipped++;
+                                idx++;
+                                step();
+                                return;
+                            }
                             item.linkBtn.href = directUrl;
                             item.linkBtn.className = 'ea-btn ea-btn-direct';
                             item.linkBtn.innerHTML = '';
@@ -2669,6 +2902,7 @@
                             idx++;
                             step();
                         }, function () {
+                            skipped++;
                             idx++;
                             step();
                         });
@@ -2703,7 +2937,7 @@
         }
 
         var titleEl = E('h3', { class: 'ea-title-text' }, [
-            E('a', { href: art.url, target: '_blank', rel: 'noopener', text: art.cleanTitle || art.title })
+            E('a', { href: safeArticleHref(art.url), target: '_blank', rel: 'noopener', text: art.cleanTitle || art.title })
         ]);
 
         titleArea.append(metaRow, titleEl);
@@ -2853,6 +3087,12 @@
                                 resolveBtnLabel.textContent = 'Resolving...';
 
                                 resolveZovoSilently(mirror.url, mirror.fallbackUrls, function (directUrl) {
+                                    if (!isDownloadUrl(directUrl)) {
+                                        resolveBtn.disabled = false;
+                                        resolveBtnLabel.textContent = 'Retry Resolve';
+                                        showToast('Silent resolve failed: blocked destination URL');
+                                        return;
+                                    }
                                     linkBtn.href = directUrl;
                                     linkBtn.className = 'ea-btn ea-btn-direct';
                                     linkBtn.innerHTML = '';
@@ -2929,6 +3169,9 @@
     var modalTitle = null;
     var modalBody = null;
     var modalDirectLink = null;
+    var modalSeq = 0;
+    var modalOpener = null;
+    var modalPreviousOverflow = '';
 
     function ensureModal() {
         if (modalOverlay) return;
@@ -2944,12 +3187,18 @@
             }
         });
 
-        modalBox = E('div', { class: 'dodi-modal-box' });
+        modalBox = E('div', {
+            class: 'dodi-modal-box',
+            role: 'dialog',
+            'aria-modal': 'true',
+            'aria-labelledby': 'dodi-modal-title',
+            tabindex: '-1'
+        });
 
         var head = E('div', { class: 'dodi-modal-head' });
 
         var titleArea = E('div', { class: 'dodi-modal-title-area' });
-        modalTitle = E('h3', { class: 'dodi-modal-title', text: 'Game Details' });
+        modalTitle = E('h3', { class: 'dodi-modal-title', id: 'dodi-modal-title', text: 'Game Details' });
         titleArea.append(modalTitle);
 
         var actions = E('div', { class: 'dodi-modal-actions' });
@@ -2968,7 +3217,8 @@
         var closeBtn = E('button', {
             class: 'dodi-modal-close',
             type: 'button',
-            title: 'Close modal (Esc)'
+            title: 'Close modal (Esc)',
+            'aria-label': 'Close'
         }, [
             svg('close')
         ]);
@@ -2989,25 +3239,49 @@
         }
 
         window.addEventListener('keydown', function (e) {
-            if (e.key === 'Escape' && modalOverlay && !modalOverlay.hidden) {
+            if (!modalOverlay || modalOverlay.hidden) return;
+            if (e.key === 'Escape') {
+                e.preventDefault();
                 closeModal();
+            } else if (e.key === 'Tab') {
+                var focusable = qa('a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), summary, [tabindex="0"]', modalBox)
+                    .filter(function (el) { return el.getClientRects().length > 0; });
+                var first = focusable[0] || modalBox;
+                var last = focusable[focusable.length - 1] || modalBox;
+                if (e.shiftKey && (document.activeElement === first || document.activeElement === modalBox || !modalBox.contains(document.activeElement))) {
+                    e.preventDefault();
+                    last.focus();
+                } else if (!e.shiftKey && (document.activeElement === last || document.activeElement === modalBox || !modalBox.contains(document.activeElement))) {
+                    e.preventDefault();
+                    first.focus();
+                }
             }
         });
     }
 
     function closeModal() {
-        if (!modalOverlay) return;
+        if (!modalOverlay || modalOverlay.hidden) return;
+        ++modalSeq;
         modalOverlay.hidden = true;
-        document.body.style.overflow = '';
+        document.body.style.overflow = modalPreviousOverflow;
+        if (modalOpener && modalOpener.isConnected) modalOpener.focus({ preventScroll: true });
+        modalOpener = null;
     }
 
     function openGameModal(url, fallbackTitle) {
         ensureModal();
+        if (modalOverlay.hidden) {
+            modalOpener = document.activeElement;
+            modalPreviousOverflow = document.body.style.overflow;
+        }
         modalOverlay.hidden = false;
         document.body.style.overflow = 'hidden';
+        modalBox.focus({ preventScroll: true });
+
+        var seq = ++modalSeq;
 
         modalTitle.textContent = fallbackTitle || 'Game Details';
-        modalDirectLink.href = url || '#';
+        modalDirectLink.href = safeArticleHref(url);
         modalBody.innerHTML = '';
 
         // 1. Check if full article is already in cache or in mainArticles
@@ -3026,6 +3300,7 @@
         modalBody.append(loadingEl);
 
         requestPage(url).then(function (html) {
+            if (seq !== modalSeq) return;
             var art = parseArticleFromHtml(html, url);
             if (!art.title && fallbackTitle) {
                 art.title = fallbackTitle;
@@ -3036,6 +3311,7 @@
             modalBody.innerHTML = '';
             modalBody.append(renderGameCard(art, true));
         }).catch(function (err) {
+            if (seq !== modalSeq) return;
             modalBody.innerHTML = '';
             var errorEl = E('div', { class: 'dodi-loading-state' }, [
                 E('span', { style: { color: '#ff6b6b', fontWeight: 'bold' }, text: 'Failed to load release details: ' + (err.message || 'Network error') }),
@@ -3106,6 +3382,15 @@
     }
 
     // 2. Free Offline Activation Tab
+    function renderPinnedEmpty(label) {
+        return E('div', { class: 'dodi-loading-state' }, [
+            state.pinnedLoading ? E('div', { class: 'dodi-spinner' }) : null,
+            E('span', { text: state.pinnedLoading ? 'Loading ' + label + ' from home page...' :
+                state.pinnedError ? 'Unable to load ' + label + ': ' + state.pinnedError :
+                'No ' + label + ' available.' })
+        ]);
+    }
+
     function renderActivationTab() {
         var head = E('div', { class: 'dodi-section-head' }, [
             E('div', {}, [
@@ -3120,16 +3405,13 @@
         var grid = E('div', { class: 'dodi-cards-grid' });
 
         if (!state.pinnedData.freeActivation || state.pinnedData.freeActivation.length === 0) {
-            grid.append(E('div', { class: 'dodi-loading-state' }, [
-                E('div', { class: 'dodi-spinner' }),
-                E('span', { text: 'Loading Free Offline Activation releases from home page...' })
-            ]));
+            grid.append(renderPinnedEmpty('Free Offline Activation releases'));
         } else {
             state.pinnedData.freeActivation.forEach(function (item) {
                 var card = E('article', { class: 'ea-card dodi-clickable-card' });
                 var panel = E('div', { class: 'ea-panel', style: { gridTemplateColumns: '1fr', gridTemplateAreas: '"title" "info"' } });
 
-                var titleLink = E('a', { href: item.url, text: item.title });
+                var titleLink = E('a', { href: safeArticleHref(item.url), text: item.title });
                 titleLink.addEventListener('click', function (e) {
                     e.preventDefault();
                     openGameModal(item.url, item.title);
@@ -3159,7 +3441,7 @@
 
                 var extBtn = E('a', {
                     class: 'ea-btn ea-btn-ghost',
-                    href: item.url,
+                    href: safeArticleHref(item.url),
                     target: '_blank',
                     rel: 'noopener',
                     title: 'Open original web page in new tab'
@@ -3207,16 +3489,13 @@
         var grid = E('div', { class: 'dodi-cards-grid' });
 
         if (!state.pinnedData.exclusive || state.pinnedData.exclusive.length === 0) {
-            grid.append(E('div', { class: 'dodi-loading-state' }, [
-                E('div', { class: 'dodi-spinner' }),
-                E('span', { text: 'Loading Exclusive Repacks from home page...' })
-            ]));
+            grid.append(renderPinnedEmpty('Exclusive Repacks'));
         } else {
             state.pinnedData.exclusive.forEach(function (item) {
                 var card = E('article', { class: 'ea-card dodi-clickable-card' });
                 var panel = E('div', { class: 'ea-panel', style: { gridTemplateColumns: '1fr', gridTemplateAreas: '"title" "info"' } });
 
-                var titleLink = E('a', { href: item.url, text: item.title });
+                var titleLink = E('a', { href: safeArticleHref(item.url), text: item.title });
                 titleLink.addEventListener('click', function (e) {
                     e.preventDefault();
                     openGameModal(item.url, item.title);
@@ -3245,7 +3524,7 @@
 
                 var extBtn = E('a', {
                     class: 'ea-btn ea-btn-ghost',
-                    href: item.url,
+                    href: safeArticleHref(item.url),
                     target: '_blank',
                     rel: 'noopener',
                     title: 'Open original web page in new tab'
@@ -3293,10 +3572,7 @@
         var list = E('div', { class: 'dodi-ranked-list' });
 
         if (!state.pinnedData.trending || state.pinnedData.trending.length === 0) {
-            list.append(E('div', { class: 'dodi-loading-state' }, [
-                E('div', { class: 'dodi-spinner' }),
-                E('span', { text: 'Loading Trending Repacks from home page...' })
-            ]));
+            list.append(renderPinnedEmpty('Trending Repacks'));
         } else {
             state.pinnedData.trending.forEach(function (item) {
                 var card = E('div', { class: 'dodi-ranked-card dodi-clickable-card' });
@@ -3314,7 +3590,7 @@
                     meta.append(E('span', { class: 'ea-badge ea-badge-green', text: item.size }));
                 }
 
-                var titleLink = E('a', { href: item.url, text: item.title });
+                var titleLink = E('a', { href: safeArticleHref(item.url), text: item.title });
                 titleLink.addEventListener('click', function (e) {
                     e.preventDefault();
                     openGameModal(item.url, item.title);
@@ -3342,10 +3618,11 @@
 
                 var extBtn = E('a', {
                     class: 'ea-btn ea-btn-ghost',
-                    href: item.url,
+                    href: safeArticleHref(item.url),
                     target: '_blank',
                     rel: 'noopener',
-                    title: 'Open original web page in new tab'
+                    title: 'Open original web page in new tab',
+                    'aria-label': 'Open original web page'
                 }, [
                     svg('open_in_new')
                 ]);
@@ -3378,6 +3655,14 @@
             return;
         }
 
+        if (state.searchError) {
+            mainViewContainer.append(E('div', { class: 'dodi-loading-state' }, [
+                E('span', { text: 'Search failed: ' + state.searchError }),
+                E('button', { class: 'ea-btn', type: 'button', text: 'Retry', onclick: function () { performSearch(state.searchQuery); } })
+            ]));
+            return;
+        }
+
         var total = state.searchAllResults.length;
         var summary = E('div', { class: 'dodi-search-summary' }, [
             E('div', {}, [
@@ -3402,7 +3687,8 @@
         var grid = E('div', { class: 'dodi-cards-grid', id: 'dodi-search-grid' });
 
         // Render loaded articles
-        for (var i = 0; i < state.searchLoadedCount; i++) {
+        var loadedCount = Math.min(state.searchLoadedCount, state.searchAllResults.length);
+        for (var i = 0; i < loadedCount; i++) {
             var artData = state.articleCache[state.searchAllResults[i].url];
             if (artData) {
                 grid.append(renderGameCard(artData));
@@ -3448,6 +3734,8 @@
         state.activeTab = 'search';
         state.searchAllResults = [];
         state.searchLoadedCount = 0;
+        state.searchError = '';
+        var seq = ++state.searchSeq;
 
         ensureSearchTabInNav();
         renderCurrentTab();
@@ -3458,6 +3746,7 @@
         } catch (e) {}
 
         requestPage(searchUrl).then(function (html) {
+            if (seq !== state.searchSeq) return;
             var parser = new DOMParser();
             var doc = parser.parseFromString(html, 'text/html');
 
@@ -3487,20 +3776,23 @@
 
             // Automatically load the FIRST 5 results
             var initialCount = Math.min(5, results.length);
-            loadSearchBatch(0, initialCount);
+            loadSearchBatch(0, initialCount, seq);
 
         }).catch(function (err) {
+            if (seq !== state.searchSeq) return;
             state.isSearching = false;
+            state.searchError = err.message || 'Search failed';
             showToast('Search failed: ' + err.message);
-            renderCurrentTab();
+            if (state.activeTab === 'search') renderCurrentTab();
         });
     }
 
-    function loadSearchBatch(startIndex, count) {
+    function loadSearchBatch(startIndex, count, seq) {
+        if (seq === undefined) seq = state.searchSeq;
         var batch = state.searchAllResults.slice(startIndex, startIndex + count);
         if (batch.length === 0) {
             state.isSearching = false;
-            renderCurrentTab();
+            if (state.activeTab === 'search') renderCurrentTab();
             return;
         }
 
@@ -3510,12 +3802,14 @@
                 return Promise.resolve(state.articleCache[item.url]);
             }
             return requestPage(item.url).then(function (html) {
+                if (seq !== state.searchSeq) return;
                 var parsed = parseArticleFromHtml(html, item.url);
                 state.articleCache[item.url] = parsed;
                 return parsed;
             }).catch(function () {
+                if (seq !== state.searchSeq) return;
                 // Fallback basic item
-                return {
+                var fb = {
                     title: item.title,
                     cleanTitle: item.title,
                     url: item.url,
@@ -3524,14 +3818,17 @@
                     sections: { spoilers: [], repackFeaturesHtml: '', backwardsHtml: '' },
                     downloads: []
                 };
+                state.articleCache[item.url] = fb;
+                return fb;
             });
         });
 
         Promise.all(promises).then(function () {
+            if (seq !== state.searchSeq) return;
             state.searchLoadedCount = startIndex + batch.length;
             state.isSearching = false;
             updateSearchTabBadge();
-            renderCurrentTab();
+            if (state.activeTab === 'search') renderCurrentTab();
         });
     }
 
@@ -3600,6 +3897,7 @@
                 state.searchQuery = searchParam;
                 state.activeTab = 'search';
                 state.searchAllResults = parsedArticles.map(function (a) { return { title: a.title, url: a.url }; });
+                state.isSearching = true;
                 var initCount = Math.min(5, state.searchAllResults.length);
                 loadSearchBatch(0, initCount);
             }
@@ -3607,7 +3905,13 @@
             // 5. Mount Modern Application
             appRoot = E('div', { id: 'dodi-app' });
             var headerEl = renderHeader();
-            mainViewContainer = E('main', { class: 'dodi-main' });
+            mainViewContainer = E('main', {
+                class: 'dodi-main',
+                id: 'dodi-main-panel',
+                role: 'tabpanel',
+                'aria-labelledby': 'dodi-tab-' + state.activeTab,
+                tabindex: '0'
+            });
 
             appRoot.append(headerEl, mainViewContainer);
             document.body.append(appRoot);

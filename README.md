@@ -51,3 +51,27 @@ Zovo links use background requests to follow the site's form sequence after its 
 ## Permissions and data
 
 The scripts run only on domains listed in their metadata. ElAmigos and DODI request cross-origin HTTP access to load release pages or resolve supported containers. DODI stores resolved Zovo URLs in browser IndexedDB and userscript storage. ElAmigos may use a configured 2Captcha key for Keeplinks verification; do not enter a key you do not control.
+
+## Development
+
+The `.user.js` files are installed directly; there is no build step. Keep the existing
+layout and styles shown in `docs/screenshots` when changing behavior.
+
+Use Node.js 22.13+ (22.x) or 24+ and the pnpm version pinned in `package.json`:
+
+```sh
+pnpm install --frozen-lockfile
+pnpm exec playwright install chromium
+pnpm check
+```
+
+`pnpm check` runs syntax checks, ESLint (including userscript metadata), and offline
+Chromium regression tests. The tests load the complete userscripts against synthetic
+pages with mocked userscript APIs and network responses. They do not access the live
+sites, resolve real download links, or require a userscript manager. CI runs the same
+checks; on Linux, `playwright install --with-deps chromium` also installs system
+dependencies.
+
+For a release, also check the home, search, archive and detail views at desktop and
+mobile sizes in a userscript manager. Fixtures cannot detect markup changes on the
+live sites or manager-specific permission behavior.
