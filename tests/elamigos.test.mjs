@@ -32,7 +32,7 @@ function installMocks({ savedCache, blockStorage, useFetch }) {
     if (!useFetch) window.GM_xmlhttpRequest = options => { window.__requests.push(options); };
 }
 
-async function open(t, { url = 'https://elamigos.site/#/all', html = indexHTML, savedCache, blockStorage, useFetch, fetchStatus = 200, fetchBody = indexHTML, fetchHang = false, viewport } = {}) {
+async function open(t, { url = 'https://elamigos.site/#/all', html = indexHTML, savedCache, blockStorage, useFetch, fetchStatus = 200, fetchBody = indexHTML, fetchHang = false, useClock = false, viewport } = {}) {
     const context = await browser.newContext({ serviceWorkers: 'block', ...(viewport ? { viewport } : {}) });
     t.after(() => context.close());
     await context.route('**/*', async route => {
@@ -54,7 +54,7 @@ async function open(t, { url = 'https://elamigos.site/#/all', html = indexHTML, 
         + ' if (document.documentElement) { observer.disconnect(); run(); } }); observer.observe(document, { childList: true }); } })();' });
     const page = await context.newPage();
     page.setDefaultTimeout(2500);
-    if (fetchHang) await page.clock.install();
+    if (fetchHang || useClock) await page.clock.install();
     await page.goto(url);
     await page.locator('#ea-app').waitFor();
     return page;
@@ -449,6 +449,48 @@ test('Filecrypt Link page skips an off-site /Go/ candidate before the real one',
     assert.doesNotMatch(output, /ads\.example/);
 });
 
+async function openFilecryptOverlay(t, { useClock = false } = {}) {
+    const page = await open(t, { useClock });
+    await respond(page, 'ea_index_refresh=');
+    await page.getByRole('checkbox', { name: 'Show Filecrypt' }).check();
+    await page.getByRole('link', { name: 'Alpha', exact: true }).click();
+    await respond(page, '/data/alpha.html', gameHTML('Alpha') + '<a href="https://filecrypt.cc/Container/a.html">Filecrypt</a>');
+    await page.getByRole('button', { name: 'Resolve Filecrypt' }).click();
+    const overlay = page.locator('.ea-modal[aria-label="Filecrypt resolver"]');
+    await overlay.waitFor();
+    return { page, overlay };
+}
+
+async function postPowStatus(page, state) {
+    await page.evaluate(state => {
+        const frame = document.querySelector('iframe[title="Filecrypt verification"]');
+        window.dispatchEvent(new MessageEvent('message', {
+            origin: 'https://filecrypt.cc',
+            source: frame.contentWindow,
+            data: { eaFilecrypt: true, payload: { type: 'pow-status', state } }
+        }));
+    }, state);
+}
+
+test('Filecrypt overlay keeps Solving at 8s when the PoW is working', async t => {
+    const { page, overlay } = await openFilecryptOverlay(t, { useClock: true });
+    await postPowStatus(page, 'working');
+    assert.match(await overlay.locator('.ea-empty').innerText(), /Solving Filecrypt proof-of-work/);
+    await page.clock.fastForward(8000);
+    const text = await overlay.locator('.ea-empty').innerText();
+    assert.match(text, /Solving Filecrypt proof-of-work/);
+    assert.doesNotMatch(text, /proof-of-work is stuck/);
+    assert.equal(await overlay.getByRole('link', { name: 'Open Filecrypt separately' }).count(), 1);
+});
+
+test('Filecrypt overlay offers a first-party tab at 8s if the PoW never starts', async t => {
+    const { page, overlay } = await openFilecryptOverlay(t, { useClock: true });
+    await page.clock.fastForward(8000);
+    const text = await overlay.locator('.ea-empty').innerText();
+    assert.match(text, /proof-of-work is stuck/);
+    assert.equal(await overlay.getByRole('link', { name: 'Open Filecrypt separately' }).count(), 1);
+});
+
 async function openFilecrypt(t, html) {
     const context = await browser.newContext({ serviceWorkers: 'block' });
     t.after(() => context.close());
@@ -472,6 +514,11 @@ async function openFilecrypt(t, html) {
     await page.goto('https://filecrypt.cc/Container/a.html');
     return page;
 }
+
+test('Filecrypt PoW helpers inject into the page world', () => {
+    assert.match(source, /Worker wrap and the click must also run in the page world/);
+    assert.match(source, /script\.textContent = '\(' \+ run\.toString\(\) \+ '\)\(\);'/);
+});
 
 test('Filecrypt page clicks the PoW checkbox and drops worker pause messages', async t => {
     const page = await openFilecrypt(t, `

@@ -1743,7 +1743,14 @@
         var status = E('div', { class: 'ea-empty', text: 'Loading Filecrypt…' });
         var containerFrame = E('iframe', { title: 'Filecrypt verification', src: containerURL, style: 'display:block;width:100%;height:min(70vh,720px);border:0;background:#fff' });
         var output = E('textarea', { class: 'ea-fc-results', readonly: '', placeholder: 'Resolved /Go/ URLs will appear here' });
-        var state = { rows: [], index: 0, pending: null, linkFrame: null };
+        var state = { rows: [], index: 0, pending: null, linkFrame: null, powState: '' };
+
+        function offerOpenSeparately() {
+            if (status.querySelector('a.ea-btn')) {
+                return;
+            }
+            status.append(E('a', { class: 'ea-btn', href: containerURL, target: '_blank', rel: 'opener', text: 'Open Filecrypt separately' }));
+        }
 
         function closeOverlay() {
             window.removeEventListener('message', onMessage);
@@ -1788,12 +1795,16 @@
                 return;
             }
             if (payload.type === 'pow-status' && event.source === containerFrame.contentWindow) {
+                if (payload.state) {
+                    state.powState = payload.state;
+                }
                 if (payload.state === 'working') {
                     status.textContent = 'Solving Filecrypt proof-of-work…';
                 } else if (payload.state === 'done') {
                     status.textContent = 'Proof-of-work finished. Waiting for links…';
                 } else if (payload.state === 'fail') {
                     status.textContent = 'Filecrypt proof-of-work failed. Try opening the container separately.';
+                    offerOpenSeparately();
                 }
                 return;
             }
@@ -1840,8 +1851,12 @@
         });
         setTimeout(function () {
             if (!state.rows.length && overlay.isConnected) {
+                if (state.powState === 'working' || state.powState === 'done' || state.powState === 'fail') {
+                    offerOpenSeparately();
+                    return;
+                }
                 status.textContent = 'Still waiting for Filecrypt links. If the proof-of-work is stuck, open the container in a tab (first-party cookies).';
-                status.append(E('a', { class: 'ea-btn', href: containerURL, target: '_blank', rel: 'opener', text: 'Open Filecrypt separately' }));
+                offerOpenSeparately();
             }
         }, 8000);
     }
