@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FitGirl Modern Dark UI
 // @author       alfablac
-// @version      1.6.2
+// @version      1.6.3
 // @namespace    fitgirl.modern.violentmonkey
 // @downloadURL  https://raw.githubusercontent.com/alfablac/game-night/main/fitgirl.user.js
 // @updateURL    https://raw.githubusercontent.com/alfablac/game-night/main/fitgirl.user.js
@@ -817,13 +817,13 @@ article.fg-upcoming-repacks .wplp_widget_13066 .wplp_thumb {
   transform: none !important;
   scroll-snap-type: x proximity !important;
   -webkit-overflow-scrolling: touch !important;
-  touch-action: pan-x pinch-zoom !important;
+  touch-action: pan-x pan-y pinch-zoom !important;
   overscroll-behavior-x: contain !important;
 }
 
 .wplp_widget_13066 .swiper-wrapper {
   transform: none !important;
-  touch-action: pan-x pinch-zoom !important;
+  touch-action: pan-x pan-y pinch-zoom !important;
 }
 
 .wplp_widget_13066 .wplp_listposts.fg-dragging {
@@ -2004,7 +2004,7 @@ details.fg-extra > summary:hover {
         l[i].tagName === 'H3' ||
         isSub(l[i]) ||
         isExtra(l[i]) ||
-        l[i].matches?.('details.fg-extra')
+        l[i].matches?.('details.fg-extra, .fg-tab-panel, .fg-tabs')
       ) {
         return i;
       }
@@ -2301,7 +2301,12 @@ details.fg-extra > summary:hover {
       if (im.dataset.fgShot) return;
       im.dataset.fgShot = '1';
       im.classList.add('fg-shot');
-      im.onclick = () => gallery(imgs, i);
+      const link = im.closest('a[href]');
+      im.onclick = e => {
+        if (link && (e.ctrlKey || e.metaKey || e.shiftKey)) return;
+        e.preventDefault();
+        gallery(imgs, i);
+      };
     });
   };
 
@@ -2600,6 +2605,7 @@ details.fg-extra > summary:hover {
       title.remove();
       [...widget.childNodes].forEach(node => body.append(node));
       details.append(summary, body);
+      details.open = window.innerWidth > 900;
       widget.append(details);
       widget.dataset.fgPopular = '1';
     });
@@ -2638,7 +2644,7 @@ details.fg-extra > summary:hover {
   const expandPagination = () => {
     document.querySelectorAll('.paging-navigation').forEach(pagination => {
       const currentNode = pagination.querySelector('.page-numbers.current');
-      const lastLink = [...pagination.querySelectorAll('a.page-numbers:not(.next)')]
+      const lastLink = [...pagination.querySelectorAll('a.page-numbers:not(.next):not(.prev)')]
         .sort((a, b) => Number(b.textContent) - Number(a.textContent))[0];
       if (!currentNode || !lastLink || pagination.dataset.fgExpanded) return;
 
@@ -2657,7 +2663,7 @@ details.fg-extra > summary:hover {
       const next = pagination.querySelector('.next.page-numbers');
       if (!next) return;
 
-      pagination.querySelectorAll('.page-numbers:not(.next)').forEach(node => node.remove());
+      pagination.querySelectorAll('.page-numbers:not(.next):not(.prev)').forEach(node => node.remove());
 
       const href = page => {
         const url = new URL(lastLink.href);
@@ -2700,7 +2706,7 @@ details.fg-extra > summary:hover {
     const sidebar = document.querySelector('#content-sidebar');
     const supplementary = document.querySelector('#supplementary');
 
-    if (!sidebar || !supplementary || supplementary.parentElement === sidebar) {
+    if (!sidebar || !supplementary || sidebar.contains(supplementary)) {
       return;
     }
 
@@ -2762,7 +2768,7 @@ details.fg-extra > summary:hover {
       };
 
       const fragment = document.createDocumentFragment();
-      fragment.append(match[1], match[2], source, value.slice(match.index + match[0].length));
+      fragment.append(value.slice(0, match.index), match[1], match[2], source, value.slice(match.index + match[0].length));
       node.replaceWith(fragment);
     });
   };
@@ -2906,7 +2912,7 @@ details.fg-extra > summary:hover {
       alignHeader();
       const isDesktop = window.innerWidth > 900;
       if (isDesktop !== sidebarDesktop) {
-        document.querySelectorAll('details.fg-sidebar').forEach(sidebar => {
+        document.querySelectorAll('details.fg-sidebar, details.fg-popular-repacks').forEach(sidebar => {
           sidebar.open = isDesktop;
         });
         sidebarDesktop = isDesktop;
@@ -2952,22 +2958,22 @@ details.fg-extra > summary:hover {
     );
 
   const run = () => {
-    observer.disconnect();
-
-    unwrapMore(document);
-    markWidgets();
-    collapsePopular();
-    moveSupplementary();
-    collapseSidebar();
-    movePagination();
-    expandPagination();
-    syncPagination();
-    alignHeader();
-    removeDuplicateCommentIcons();
-    stabilizeLatestRepacks();
-    enableLatestRepacksTouch();
-
     try {
+      observer.disconnect();
+
+      unwrapMore(document);
+      markWidgets();
+      collapsePopular();
+      moveSupplementary();
+      collapseSidebar();
+      movePagination();
+      expandPagination();
+      syncPagination();
+      alignHeader();
+      removeDuplicateCommentIcons();
+      stabilizeLatestRepacks();
+      enableLatestRepacksTouch();
+
       document.querySelectorAll('article').forEach(article => {
         try {
           processArticle(article);
