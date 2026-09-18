@@ -2,7 +2,7 @@
 // @name         ElAmigos Modern UI
 // @bound-url    https://elamigos.site/#/
 // @namespace    elamigos.modern.ui
-// @version      1.4.7
+// @version      1.4.8
 // @description  Responsive dark ElAmigos interface with 12 latest releases, configurable language highlighting, pagination, A–Z archive, compact cards, technical details, details modal, and video.
 // @author       alfablac
 // @downloadURL  https://raw.githubusercontent.com/alfablac/game-night/main/elamigos.user.js
@@ -34,10 +34,59 @@
     var isFilecrypt = /^(?:www\.)?filecrypt\.cc$/i.test(location.hostname);
 
     if (isFilecrypt) {
-        if (window.top !== window) {
+        installFilecryptPow();
+        if (window.top !== window || window.opener) {
             startFilecryptFrame();
         }
         return;
+    }
+
+    // Filecrypt's widget (pow_captcha.js) starts SHA-1 work on a click and pauses the
+    // worker on window.blur. The resolver iframe is never focused, so ignore pause and
+    // click "I am a human" once the box is idle. Keep retrying until data-state leaves
+    // idle: a click before their defer script binds the listener is a no-op.
+    function installFilecryptPow() {
+        try {
+            if (typeof Worker !== 'undefined' && Worker.prototype && !Worker.prototype.__eaSkipPowPause) {
+                var origPost = Worker.prototype.postMessage;
+                Worker.prototype.postMessage = function (msg) {
+                    if (msg && msg.cmd === 'pause') return;
+                    return origPost.apply(this, arguments);
+                };
+                Worker.prototype.__eaSkipPowPause = true;
+            }
+        } catch (error) { /* keep Filecrypt usable if Worker is frozen */ }
+
+        function clickPow() {
+            var root = document.getElementById('pow-captcha');
+            if (!root) return false;
+            if (root.getAttribute('data-state') !== 'idle') return true;
+            var box = root.querySelector('.pow-captcha__box');
+            if (!box) return false;
+            try {
+                box.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, pointerType: 'mouse' }));
+            } catch (error) {
+                box.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, cancelable: true }));
+            }
+            box.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+            box.click();
+            return root.getAttribute('data-state') !== 'idle';
+        }
+
+        function startWhenReady() {
+            if (clickPow()) return;
+            var tries = 0;
+            var timer = setInterval(function () {
+                tries += 1;
+                if (clickPow() || tries > 40) clearInterval(timer);
+            }, 250);
+        }
+
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', startWhenReady, { once: true });
+        } else {
+            startWhenReady();
+        }
     }
 
     var home = /^\/(?:index\.html?)?$/.test(location.pathname);
@@ -64,8 +113,14 @@
 
         function post(message) {
             // Only the elamigos.site overlay should receive resolver results (a non-matching targetOrigin is silently dropped).
+            var envelope = { eaFilecrypt: true, payload: message };
             ['https://elamigos.site', 'https://www.elamigos.site'].forEach(function (origin) {
-                window.parent.postMessage({ eaFilecrypt: true, payload: message }, origin);
+                try { window.parent.postMessage(envelope, origin); } catch (error) { /* ignore */ }
+                try {
+                    if (window.opener && window.opener !== window) {
+                        window.opener.postMessage(envelope, origin);
+                    }
+                } catch (error) { /* ignore */ }
             });
         }
 
@@ -149,11 +204,27 @@
             }, 300000);
         }
 
+        function watchPow() {
+            var el = document.getElementById('pow-captcha');
+            if (!el || typeof MutationObserver === 'undefined') return;
+            var last = '';
+            function emit() {
+                var state = el.getAttribute('data-state') || '';
+                if (state && state !== last && state !== 'idle') {
+                    last = state;
+                    post({ type: 'pow-status', state: state });
+                }
+            }
+            emit();
+            new MutationObserver(emit).observe(el, { attributes: true, attributeFilter: ['data-state'] });
+        }
+
         function run() {
             if (!document.body) {
                 document.addEventListener('DOMContentLoaded', run, { once: true });
                 return;
             }
+            watchPow();
             if (/^\/Link\//i.test(location.pathname)) {
                 linkPage();
             } else if (/^\/Container\//i.test(location.pathname)) {
@@ -1707,6 +1778,16 @@
             if (!message.eaFilecrypt) {
                 return;
             }
+            if (payload.type === 'pow-status' && event.source === containerFrame.contentWindow) {
+                if (payload.state === 'working') {
+                    status.textContent = 'Solving Filecrypt proof-of-work…';
+                } else if (payload.state === 'done') {
+                    status.textContent = 'Proof-of-work finished. Waiting for links…';
+                } else if (payload.state === 'fail') {
+                    status.textContent = 'Filecrypt proof-of-work failed. Try opening the container separately.';
+                }
+                return;
+            }
             if (payload.type === 'container-ready' && event.source === containerFrame.contentWindow) {
                 state.rows = Array.isArray(payload.rows) ? payload.rows : [];
                 if (!state.rows.length) {
@@ -1744,11 +1825,14 @@
         bindModalKeys(overlay, closeOverlay);
         window.addEventListener('message', onMessage);
         app.append(overlay);
-        close.focus();
+        overlay.focus();
+        containerFrame.addEventListener('load', function () {
+            try { containerFrame.focus(); } catch (error) { /* ignore */ }
+        });
         setTimeout(function () {
             if (!state.rows.length && overlay.isConnected) {
-                status.textContent = 'Complete Filecrypt PoW in the embedded page. If it is blocked, open the container directly.';
-                status.append(E('a', { class: 'ea-btn', href: containerURL, target: '_blank', rel: 'noopener', text: 'Open Filecrypt separately' }));
+                status.textContent = 'Still waiting for Filecrypt links. If the proof-of-work is stuck, open the container in a tab (first-party cookies).';
+                status.append(E('a', { class: 'ea-btn', href: containerURL, target: '_blank', rel: 'opener', text: 'Open Filecrypt separately' }));
             }
         }, 8000);
     }
